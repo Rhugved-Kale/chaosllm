@@ -37,6 +37,9 @@ packages = ["chaosllm"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+# demo/ has its own pyproject.toml, own deps, own ruff config, and its own
+# CI job; excluded here so it isn't linted twice with the wrong config.
+extend-exclude = ["demo"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B"]
@@ -56,3 +59,4 @@ strict = false
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
+testpaths = ["tests"]

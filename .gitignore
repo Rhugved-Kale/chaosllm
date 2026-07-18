@@ -16,3 +16,5 @@ build/
 
 # runtime artifacts
 metrics.jsonl
+*.db
+runs/

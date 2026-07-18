@@ -1,0 +1,35 @@
+# Reference example from DESIGN.md 4.3, verbatim: this is the spec-format
+# illustration for an HTTP-based vector DB reached through a passthrough
+# route. It assumes a target app whose retrieval hop goes back out through
+# the proxy at /passthrough/vectordb/*.
+#
+# chaosllm's own demo app (demo/) uses an in-process chromadb store instead
+# (DESIGN.md 4.6), so it has no such HTTP hop to fault-inject against; see
+# llm-timeout-spike.yaml for the spec that's actually runnable against it.
+name: vector-db-latency-spike
+description: RAG behavior when retrieval latency exceeds 200ms
+target:
+  base_url: http://localhost:8100
+  endpoint: POST /ask
+  payload_file: payloads/questions.jsonl
+load:
+  concurrency: 8
+  duration_s: 120
+  warmup_s: 15
+faults:
+  - id: latency
+    route: /passthrough/vectordb/*
+    delay_ms: 300
+    jitter_ms: 100
+    p: 1.0
+assertions:
+  - type: success_rate
+    min: 0.95
+  - type: latency_p95_ms
+    max: 4000
+  - type: response_contains
+    field: answer
+    forbid_empty: true
+  - type: json_field_present
+    field: citations
+    min_items: 1

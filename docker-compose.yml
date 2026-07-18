@@ -1,0 +1,23 @@
+# Dashboard service lands in Phase 4 (DESIGN.md 4.7); this stack is proxy +
+# demo app only for now.
+services:
+  proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./proxy.yaml:/app/proxy.yaml:ro
+
+  demo-app:
+    build:
+      context: ./demo
+      dockerfile: Dockerfile
+    ports:
+      - "8100:8100"
+    environment:
+      PROXY_BASE_URL: http://proxy:8000
+      RESILIENT: ${RESILIENT:-false}
+    depends_on:
+      - proxy
