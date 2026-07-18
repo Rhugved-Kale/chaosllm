@@ -1,0 +1,7 @@
+# Passthrough targets for the generic /passthrough/{id}/* route.
+# /openai/* and /anthropic/* are built in and need no entry here.
+#
+# passthrough:
+#   vectordb:
+#     base_url: http://localhost:9000
+passthrough: {}
