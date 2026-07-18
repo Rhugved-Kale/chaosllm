@@ -1,0 +1,34 @@
+# Actually runnable against demo/: the demo app's retrieval is in-process
+# chromadb (no HTTP hop to fault), but its LLM call goes through the proxy's
+# /openai/* route, so that's the fault surface this spec uses.
+#
+# hold_ms (8s) is deliberately longer than the resilient demo path's own
+# client timeout (5s, see demo/llm_client.py RESILIENT_TIMEOUT_S): the
+# resilient app gives up on its own terms before the proxy would even finish
+# blackholing the connection. The naive path has no client timeout at all,
+# so it's bounded only by how long the proxy holds (hold_ms) before closing
+# the connection.
+name: llm-timeout-spike
+description: RAG behavior when the LLM call hangs (blackholed) for 8s
+target:
+  base_url: http://localhost:8100
+  endpoint: POST /ask
+  payload_file: payloads/questions.jsonl
+load:
+  concurrency: 3
+  duration_s: 30
+  warmup_s: 10
+faults:
+  - id: timeout
+    route: /openai/*
+    hold_ms: 8000
+    p: 1.0
+assertions:
+  - type: success_rate
+    min: 0.8
+  - type: response_contains
+    field: answer
+    forbid_empty: true
+  - type: json_field_present
+    field: citations
+    min_items: 1

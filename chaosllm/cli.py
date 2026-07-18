@@ -1,19 +1,20 @@
-"""chaosllm CLI: proxy | run | report | demo.
-
-`run`, `report`, and `demo` are stubs until their phases land (runner and
-demo app in Phase 3, report generator in Phase 3). They exist now so the
-command surface is stable across phases.
-"""
+"""chaosllm CLI: proxy | run | report | demo."""
 
 from __future__ import annotations
 
+import asyncio
+import json
+import subprocess
 from pathlib import Path
 
 import typer
 import uvicorn
 
+from chaosllm.metrics.store import MetricsStore
 from chaosllm.proxy.app import create_app
 from chaosllm.proxy.config import ProxyConfig
+from chaosllm.report.render import RunNotFoundError, render_json, render_markdown
+from chaosllm.runner.runner import run_experiment
 
 app = typer.Typer(help="Chaos engineering for LLM-powered applications.")
 
@@ -36,24 +37,67 @@ def proxy(
 
 
 @app.command()
-def run(spec: Path = typer.Argument(..., help="Path to an experiment YAML spec.")) -> None:
-    """Run an experiment against a target app."""
-    typer.echo("chaosllm run: not implemented until Phase 3", err=True)
-    raise typer.Exit(code=1)
+def run(
+    spec: Path = typer.Argument(..., help="Path to an experiment YAML spec."),
+    proxy_url: str = typer.Option(
+        "http://127.0.0.1:8000", help="Base URL of the running proxy's control API."
+    ),
+    proxy_metrics: Path = typer.Option(
+        Path("metrics.jsonl"), help="Path to the proxy's JSONL metrics log."
+    ),
+    db: Path = typer.Option(Path("chaosllm.db"), help="Path to the SQLite summary store."),
+    runs_dir: Path = typer.Option(Path("runs"), help="Directory for per-run JSONL event logs."),
+) -> None:
+    """Run an experiment against a target app and print its report."""
+    summary = asyncio.run(
+        run_experiment(
+            spec,
+            proxy_url=proxy_url,
+            proxy_metrics_path=proxy_metrics,
+            db_path=db,
+            runs_dir=runs_dir,
+        )
+    )
+    store = MetricsStore(db)
+    try:
+        typer.echo(render_markdown(store, summary.run_id))
+    finally:
+        store.close()
 
 
 @app.command()
-def report(run_id: str = typer.Argument(..., help="Run id to report on.")) -> None:
+def report(
+    run_id: str = typer.Argument(..., help="Run id to report on."),
+    db: Path = typer.Option(Path("chaosllm.db"), help="Path to the SQLite summary store."),
+    as_json: bool = typer.Option(False, "--json", help="Render as JSON instead of Markdown."),
+) -> None:
     """Render a resilience report for a completed run."""
-    typer.echo("chaosllm report: not implemented until Phase 3", err=True)
-    raise typer.Exit(code=1)
+    store = MetricsStore(db)
+    try:
+        if as_json:
+            typer.echo(json.dumps(render_json(store, run_id), indent=2))
+        else:
+            typer.echo(render_markdown(store, run_id))
+    except RunNotFoundError:
+        typer.echo(f"no such run: {run_id}", err=True)
+        raise typer.Exit(code=1) from None
+    finally:
+        store.close()
 
 
 @app.command()
 def demo(action: str = typer.Argument(..., help="up | down")) -> None:
-    """Start or stop the demo RAG stack."""
-    typer.echo("chaosllm demo: not implemented until Phase 3", err=True)
-    raise typer.Exit(code=1)
+    """Start or stop the demo stack via docker compose."""
+    if action not in ("up", "down"):
+        typer.echo("usage: chaosllm demo [up|down]", err=True)
+        raise typer.Exit(code=1)
+    args = (
+        ["docker", "compose", "up", "-d", "--build"]
+        if action == "up"
+        else ["docker", "compose", "down"]
+    )
+    result = subprocess.run(args, check=False)
+    raise typer.Exit(code=result.returncode)
 
 
 if __name__ == "__main__":
