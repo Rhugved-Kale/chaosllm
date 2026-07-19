@@ -191,6 +191,8 @@ def _make_progress_callback(
 ) -> Callable[[list[RequestResult]], Awaitable[None]]:
     async def on_progress(results: list[RequestResult]) -> None:
         latencies = sorted(r.latency_ms for r in results)
+        successes = [r for r in results if r.success]
+        degraded_count = sum(1 for r in successes if r.degraded)
         try:
             fault_fire_counts = await query_fault_fire_counts(
                 control_client, since=phase_start_ts, until=now_iso()
@@ -204,8 +206,9 @@ def _make_progress_callback(
                 "type": "progress",
                 "phase": phase.value,
                 "total_count": len(results),
-                "success_count": sum(1 for r in results if r.success),
+                "success_count": len(successes),
                 "latency_p95_ms": _percentile(latencies, 0.95) if latencies else None,
+                "degraded_rate": (degraded_count / len(successes)) if successes else None,
                 "fault_fire_counts": fault_fire_counts,
             },
         )
@@ -377,8 +380,13 @@ async def run_experiment(
                 "type": "run_complete",
                 "phase": Phase.CHAOS.value,
                 "total_count": len(chaos_results),
-                "success_count": sum(1 for r in chaos_results if r.success),
+                "success_count": chaos_summary.success_count,
                 "latency_p95_ms": chaos_summary.latency_p95_ms,
+                "degraded_rate": (
+                    chaos_summary.degraded_count / chaos_summary.success_count
+                    if chaos_summary.success_count
+                    else None
+                ),
                 "fault_fire_counts": chaos_fault_fire_counts,
                 "assertions": [
                     {"type": a.type, "passed": a.passed, "detail": a.detail}

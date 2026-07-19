@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import Sparkline from "./Sparkline.jsx";
+import ComparisonShowcase from "./ComparisonShowcase.jsx";
 
 // The one config knob this whole app has: which proxy's control API to
 // watch. Set VITE_PROXY_URL at build time (Vercel env var for the hosted
@@ -8,11 +9,11 @@ const PROXY_URL = import.meta.env.VITE_PROXY_URL || "http://localhost:8000";
 
 const POLL_INTERVAL_MS = 3000;
 
-function Stat({ label, value }) {
+function BigStat({ label, value, tone }) {
   return (
-    <div className="stat">
-      <div className="stat-value">{value}</div>
-      <div className="stat-label">{label}</div>
+    <div className="big-stat">
+      <div className={`big-stat-value${tone ? ` tone-${tone}` : ""}`}>{value}</div>
+      <div className="big-stat-label">{label}</div>
     </div>
   );
 }
@@ -23,6 +24,7 @@ export default function App() {
   const [phase, setPhase] = useState(null);
   const [totalCount, setTotalCount] = useState(0);
   const [successCount, setSuccessCount] = useState(0);
+  const [degradedRate, setDegradedRate] = useState(null);
   const [latencyHistory, setLatencyHistory] = useState([]);
   const [faultFireCounts, setFaultFireCounts] = useState({});
   const [assertions, setAssertions] = useState([]);
@@ -46,6 +48,7 @@ export default function App() {
           setPhase(null);
           setTotalCount(0);
           setSuccessCount(0);
+          setDegradedRate(null);
           setLatencyHistory([]);
           setFaultFireCounts({});
           setAssertions([]);
@@ -79,6 +82,7 @@ export default function App() {
       if (data.phase) setPhase(data.phase);
       if (typeof data.total_count === "number") setTotalCount(data.total_count);
       if (typeof data.success_count === "number") setSuccessCount(data.success_count);
+      if (data.degraded_rate != null) setDegradedRate(data.degraded_rate);
       if (data.latency_p95_ms != null) {
         setLatencyHistory((prev) => [...prev.slice(-29), data.latency_p95_ms]);
       }
@@ -104,74 +108,93 @@ export default function App() {
   const successRate = totalCount > 0 ? (successCount / totalCount) * 100 : null;
 
   return (
-    <div className="dashboard">
-      <header>
-        <h1>chaosllm</h1>
-        <span className={`status-pill status-${status}`}>{status}</span>
+    <div className="page">
+      <header className="hero">
+        <h1>ChaosLLM</h1>
+        <p className="pitch">Chaos engineering for LLM apps</p>
       </header>
 
-      {!runId && <p className="empty-state">Waiting for a run…</p>}
+      <section className="live-panel">
+        <div className="live-panel-header">
+          <span className={`status-pill status-${status}`}>{status}</span>
+          {runId && <span className="run-id">{runId}</span>}
+        </div>
 
-      {runId && (
-        <>
-          <div className="run-id">{runId}</div>
+        {!runId && <p className="empty-state">Waiting for an experiment to run…</p>}
 
-          <div className="stat-grid">
-            <Stat label="phase" value={phase ?? "—"} />
-            <Stat label="requests" value={totalCount} />
-            <Stat
-              label="success rate"
-              value={successRate != null ? `${successRate.toFixed(1)}%` : "—"}
-            />
-          </div>
+        {runId && (
+          <>
+            <div className="phase-row">
+              <span className="phase-indicator">{phase ?? "—"}</span>
+              <span className="phase-count">{totalCount.toLocaleString()} requests</span>
+            </div>
 
-          <Sparkline values={latencyHistory} label="p95 latency (ms)" />
+            <div className="big-stat-row">
+              <BigStat
+                label="success rate"
+                value={successRate != null ? `${successRate.toFixed(0)}%` : "—"}
+                tone="pass"
+              />
+              <BigStat
+                label="degraded rate"
+                value={degradedRate != null ? `${(degradedRate * 100).toFixed(0)}%` : "—"}
+                tone="warn"
+              />
+            </div>
 
-          <section>
-            <h2>Faults fired</h2>
-            {Object.keys(faultFireCounts).length === 0 ? (
-              <p className="muted">none yet</p>
-            ) : (
-              <ul className="fault-ticker">
-                {Object.entries(faultFireCounts).map(([id, count]) => (
-                  <li key={id}>
-                    <code>{id}</code>
-                    <span>{count}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
+            <Sparkline values={latencyHistory} label="p95 latency (ms)" />
 
-          <section>
-            <h2>Assertions</h2>
-            {assertions.length === 0 ? (
-              <p className="muted">pending</p>
-            ) : (
-              <ul className="assertions">
+            <div className="fault-ticker">
+              <div className="section-label">Faults fired</div>
+              {Object.keys(faultFireCounts).length === 0 ? (
+                <p className="fault-ticker-empty">none yet</p>
+              ) : (
+                <ul className="fault-ticker-list">
+                  {Object.entries(faultFireCounts).map(([id, count]) => (
+                    <li key={id}>
+                      <code>{id}</code>
+                      <span className="count">{count}</span>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+
+            {assertions.length > 0 && (
+              <div className="assertion-chips">
                 {assertions.map((assertion) => (
-                  <li key={assertion.type} className={assertion.passed ? "pass" : "fail"}>
-                    <span className="mark">{assertion.passed ? "PASS" : "FAIL"}</span>
-                    <code>{assertion.type}</code>
-                    <span className="detail">{assertion.detail}</span>
-                  </li>
+                  <span
+                    key={assertion.type}
+                    className={`chip ${assertion.passed ? "chip-pass" : "chip-fail"}`}
+                    title={assertion.detail}
+                  >
+                    {assertion.passed ? "PASS" : "FAIL"} · {assertion.type}
+                  </span>
                 ))}
-              </ul>
+              </div>
             )}
-          </section>
 
-          {warnings.length > 0 && (
-            <section className="warnings">
-              <h2>Warnings</h2>
-              <ul>
-                {warnings.map((warning) => (
-                  <li key={warning}>{warning}</li>
-                ))}
-              </ul>
-            </section>
-          )}
-        </>
-      )}
+            {warnings.length > 0 && (
+              <div className="warnings">
+                <ul>
+                  {warnings.map((warning) => (
+                    <li key={warning}>{warning}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </>
+        )}
+      </section>
+
+      <ComparisonShowcase />
+
+      <footer className="footer">
+        <a href="https://github.com/Rhugved-Kale/ChaosLLM" target="_blank" rel="noreferrer">
+          GitHub
+        </a>
+        <span>Rhugved Kale</span>
+      </footer>
     </div>
   );
 }

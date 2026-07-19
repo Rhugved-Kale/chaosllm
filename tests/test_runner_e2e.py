@@ -399,3 +399,88 @@ assertions:
         store.close()
 
     assert received[-1]["latency_p95_ms"] == chaos_summary.latency_p95_ms
+
+
+async def test_run_complete_event_reports_the_chaos_phase_degraded_rate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """degraded_rate used to only ever surface as an optional assertion's
+    detail string, only present when an experiment happened to declare a
+    degraded_rate assertion (most don't). The dashboard needs it as a plain
+    number on every run_complete event regardless, matching the chaos
+    phase's own persisted summary the same way latency_p95_ms already does.
+    """
+    monkeypatch.setattr("chaosllm.runner.runner.PROGRESS_INTERVAL_S", 0.02)
+    proxy_metrics_path = tmp_path / "proxy_metrics.jsonl"
+    proxy_app = create_app(metrics_path=proxy_metrics_path)
+
+    always_degraded_app = FastAPI()
+
+    @always_degraded_app.post("/ask")
+    async def ask(request: Request) -> dict[str, Any]:
+        await request.json()
+        return {"answer": "extractive fallback", "citations": ["doc-1"], "degraded": True}
+
+    async with _serve(proxy_app) as proxy_url:
+        async with _serve(always_degraded_app) as target_url:
+            payload_file = tmp_path / "questions.jsonl"
+            payload_file.write_text('{"question": "What is chaos engineering?"}\n')
+
+            spec_path = tmp_path / "spec.yaml"
+            spec_path.write_text(
+                f"""\
+name: degraded-rate-event-test
+target:
+  base_url: {target_url}
+  endpoint: POST /ask
+  payload_file: {payload_file}
+load:
+  concurrency: 1
+  duration_s: 0.1
+  warmup_s: 0.1
+assertions:
+  - type: success_rate
+    min: 0.5
+"""
+            )
+
+            received: list[dict[str, Any]] = []
+
+            async def consume_run_complete(client: httpx.AsyncClient) -> None:
+                run_id = None
+                while run_id is None:
+                    latest = await client.get("/control/runs/latest")
+                    run_id = latest.json()["run_id"]
+                    if run_id is None:
+                        await asyncio.sleep(0.01)
+                async with client.stream("GET", f"/control/runs/{run_id}/events") as resp:
+                    async for line in resp.aiter_lines():
+                        if line.startswith("data: "):
+                            received.append(json.loads(line[len("data: ") :]))
+                            if received[-1].get("type") == "run_complete":
+                                return
+
+            async with httpx.AsyncClient(base_url=proxy_url) as client:
+                consumer = asyncio.create_task(consume_run_complete(client))
+
+                db_path = tmp_path / "chaosllm.db"
+                summary = await run_experiment(
+                    spec_path,
+                    proxy_url=proxy_url,
+                    db_path=db_path,
+                    runs_dir=tmp_path / "runs",
+                    request_timeout_s=2.0,
+                )
+                await asyncio.wait_for(consumer, timeout=2.0)
+
+    store = MetricsStore(db_path)
+    try:
+        chaos_summary = next(
+            s for s in store.get_phase_summaries(summary.run_id) if s.phase == "chaos"
+        )
+    finally:
+        store.close()
+
+    assert chaos_summary.success_count > 0
+    assert chaos_summary.degraded_count == chaos_summary.success_count
+    assert received[-1]["degraded_rate"] == 1.0

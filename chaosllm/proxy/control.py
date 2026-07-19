@@ -50,6 +50,7 @@ class RunEventIn(BaseModel):
     total_count: int = 0
     success_count: int = 0
     latency_p95_ms: float | None = None
+    degraded_rate: float | None = None
     fault_fire_counts: dict[str, int] = Field(default_factory=dict)
     assertions: list[AssertionStatus] = Field(default_factory=list)
     warnings: list[str] = Field(default_factory=list)
