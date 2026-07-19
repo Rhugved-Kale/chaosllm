@@ -11,6 +11,7 @@ exactly as they would be against a real deployment.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -25,6 +26,16 @@ from chaosllm.metrics.store import MetricsStore
 from chaosllm.proxy.app import create_app
 from chaosllm.report.render import render_markdown
 from chaosllm.runner.runner import run_experiment
+
+
+def test_run_experiment_has_no_metrics_file_path_parameter() -> None:
+    """Regression guard: the runner must never again assume file-path access
+    to the proxy's metrics.jsonl (see query_fault_fire_counts). That
+    assumption is exactly what silently zeroed every fault tally the moment
+    the proxy ran in a different process/container than the runner.
+    """
+    params = inspect.signature(run_experiment).parameters
+    assert "proxy_metrics_path" not in params
 
 
 @asynccontextmanager
@@ -123,7 +134,6 @@ assertions:
                 summary = await run_experiment(
                     spec_path,
                     proxy_url=proxy_url,
-                    proxy_metrics_path=proxy_metrics_path,
                     db_path=db_path,
                     runs_dir=tmp_path / "runs",
                     request_timeout_s=2.0,
@@ -217,7 +227,6 @@ assertions:
                 summary = await run_experiment(
                     spec_path,
                     proxy_url=proxy_url,
-                    proxy_metrics_path=proxy_metrics_path,
                     db_path=db_path,
                     runs_dir=tmp_path / "runs",
                     request_timeout_s=2.0,

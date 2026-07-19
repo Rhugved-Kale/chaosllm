@@ -1,4 +1,4 @@
--- chaosllm metrics schema, version 2.
+-- chaosllm metrics schema, version 3.
 --
 -- The per-request firehose stays JSONL (see tap.py, runner event logs);
 -- these tables hold the summary a report is rendered from: one row per run,
@@ -9,7 +9,13 @@
 -- v2 adds requests.fault_fire_counts (per-phase, not just chaos-window)
 -- and runs.warnings (e.g. flags a run whose chaos phase fired zero faults:
 -- a vacuous experiment, since the fault's route never saw any traffic).
--- See MetricsStore._migrate for the v1 -> v2 upgrade path.
+--
+-- v3 adds requests.degraded_count: how many *successful* responses in a
+-- phase were degraded=true (e.g. a resilient app's extractive fallback). A
+-- run can show 100% success_rate while every "success" was a degraded
+-- fallback; this is tracked separately so that isn't invisible.
+--
+-- See MetricsStore._migrate for the upgrade path.
 
 CREATE TABLE IF NOT EXISTS schema_version (
     version INTEGER NOT NULL
@@ -38,6 +44,7 @@ CREATE TABLE IF NOT EXISTS requests (
     latency_p99_ms REAL,
     error_taxonomy TEXT NOT NULL DEFAULT '{}',
     fault_fire_counts TEXT NOT NULL DEFAULT '{}',
+    degraded_count INTEGER NOT NULL DEFAULT 0,
     PRIMARY KEY (run_id, phase)
 );
 

@@ -22,7 +22,17 @@ def now_iso() -> str:
 
 @dataclass
 class RequestRecord:
-    """One proxied request, as logged to the metrics tap."""
+    """One proxied request, as logged to the metrics tap.
+
+    Three separate timing fields rather than one merged `latency_ms`
+    (DESIGN.md 4.1: "latency (proxy-added and upstream)"): `total_ms` is what
+    the caller actually waited, `upstream_ms` is the real provider call alone
+    (None when short-circuited, no upstream call happened), and
+    `injected_delay_ms` is the `latency` fault's own sleep. A latency fault
+    sleeping before forwarding was previously invisible in the logged number
+    entirely (only the post-sleep upstream call was timed), so a request that
+    took 2.8s end to end could show ~0.8s in the log.
+    """
 
     request_id: str
     timestamp: str
@@ -30,7 +40,9 @@ class RequestRecord:
     route: str
     upstream: str
     status: int
-    latency_ms: float
+    total_ms: float
+    upstream_ms: float | None
+    injected_delay_ms: float
     faults_fired: list[str] = field(default_factory=list)
 
     def to_json(self) -> dict[str, Any]:
@@ -41,7 +53,9 @@ class RequestRecord:
             "route": self.route,
             "upstream": self.upstream,
             "status": self.status,
-            "latency_ms": self.latency_ms,
+            "total_ms": self.total_ms,
+            "upstream_ms": self.upstream_ms,
+            "injected_delay_ms": self.injected_delay_ms,
             "faults_fired": self.faults_fired,
         }
 
@@ -64,3 +78,28 @@ class MetricsTap:
         async with self._lock:
             with self.path.open("a", encoding="utf-8") as f:
                 f.write(line)
+
+
+def fault_fire_counts_since(path: Path, *, since: str, until: str) -> dict[str, int]:
+    """Count fault fires logged in `path` within [since, until] (inclusive).
+
+    Backs the control API's GET /control/metrics/summary, which exists so a
+    caller queries the proxy's own live metrics over HTTP instead of reading
+    metrics.jsonl by file path. That assumption breaks the moment the proxy
+    runs in a different process or container than the caller: the runner did
+    exactly that, silently reading a stale or nonexistent file and always
+    seeing zero fault fires.
+    """
+    if not path.exists():
+        return {}
+    counts: dict[str, int] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        record = json.loads(line)
+        timestamp = record.get("timestamp", "")
+        if not (since <= timestamp <= until):
+            continue
+        for fault_id in record.get("faults_fired", []):
+            counts[fault_id] = counts.get(fault_id, 0) + 1
+    return counts

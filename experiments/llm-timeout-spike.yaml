@@ -32,3 +32,9 @@ assertions:
   - type: json_field_present
     field: citations
     min_items: 1
+  # success_rate alone can't tell a real answer from a degraded fallback:
+  # the resilient path can show 100% success while every "success" is an
+  # extractive fallback served in single-digit milliseconds. This catches
+  # that case instead of letting it read as a clean pass.
+  - type: degraded_rate
+    max: 0.5

@@ -42,9 +42,6 @@ def run(
     proxy_url: str = typer.Option(
         "http://127.0.0.1:8000", help="Base URL of the running proxy's control API."
     ),
-    proxy_metrics: Path = typer.Option(
-        Path("metrics.jsonl"), help="Path to the proxy's JSONL metrics log."
-    ),
     db: Path = typer.Option(Path("chaosllm.db"), help="Path to the SQLite summary store."),
     runs_dir: Path = typer.Option(Path("runs"), help="Directory for per-run JSONL event logs."),
 ) -> None:
@@ -53,7 +50,6 @@ def run(
         run_experiment(
             spec,
             proxy_url=proxy_url,
-            proxy_metrics_path=proxy_metrics,
             db_path=db,
             runs_dir=runs_dir,
         )

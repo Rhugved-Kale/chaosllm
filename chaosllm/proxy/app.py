@@ -78,6 +78,7 @@ def create_app(
     async def _proxy(
         request: Request, upstream_base: str, upstream_path: str, route_label: str
     ) -> Response:
+        request_received_at = time.perf_counter()
         http_client: httpx.AsyncClient = app.state.client
         metrics: MetricsTap = app.state.metrics
         pipeline: FaultPipeline = app.state.fault_pipeline
@@ -90,12 +91,14 @@ def create_app(
         body = await request.body()
         outcome = await pipeline.evaluate(request.url.path, body)
         body = outcome.request_body
+        injected_delay_ms = outcome.pre_delay_s * 1000
 
         if outcome.pre_delay_s > 0:
             await asyncio.sleep(outcome.pre_delay_s)
 
         if outcome.short_circuit is not None:
             outcome.short_circuit.headers["x-chaosllm-request-id"] = request_id
+            total_ms = (time.perf_counter() - request_received_at) * 1000
             await metrics.record(
                 RequestRecord(
                     request_id=request_id,
@@ -104,7 +107,9 @@ def create_app(
                     route=route_label,
                     upstream=upstream_url,
                     status=outcome.short_circuit.status_code,
-                    latency_ms=outcome.pre_delay_s * 1000,
+                    total_ms=total_ms,
+                    upstream_ms=None,
+                    injected_delay_ms=injected_delay_ms,
                     faults_fired=outcome.fired,
                 )
             )
@@ -112,28 +117,15 @@ def create_app(
 
         headers = _filtered_headers(request.headers)
 
-        start = time.perf_counter()
+        upstream_start = time.perf_counter()
         upstream_request = http_client.build_request(
             request.method, upstream_url, headers=headers, content=body
         )
         upstream_response = await http_client.send(upstream_request, stream=True)
-        latency_ms = (time.perf_counter() - start) * 1000
+        upstream_ms = (time.perf_counter() - upstream_start) * 1000
 
         response_headers = _filtered_headers(upstream_response.headers)
         response_headers["x-chaosllm-request-id"] = request_id
-
-        await metrics.record(
-            RequestRecord(
-                request_id=request_id,
-                timestamp=now_iso(),
-                method=request.method,
-                route=route_label,
-                upstream=upstream_url,
-                status=upstream_response.status_code,
-                latency_ms=latency_ms,
-                faults_fired=outcome.fired,
-            )
-        )
 
         if outcome.response_transform is not None:
             # truncate/malformed_json need the full body in hand, so this
@@ -143,12 +135,43 @@ def create_app(
             raw_body = await upstream_response.aread()
             await upstream_response.aclose()
             transformed = outcome.response_transform.apply(raw_body)
+            total_ms = (time.perf_counter() - request_received_at) * 1000
+            await metrics.record(
+                RequestRecord(
+                    request_id=request_id,
+                    timestamp=now_iso(),
+                    method=request.method,
+                    route=route_label,
+                    upstream=upstream_url,
+                    status=upstream_response.status_code,
+                    total_ms=total_ms,
+                    upstream_ms=upstream_ms,
+                    injected_delay_ms=injected_delay_ms,
+                    faults_fired=outcome.fired,
+                )
+            )
             return Response(
                 content=transformed,
                 status_code=upstream_response.status_code,
                 headers=response_headers,
                 media_type=upstream_response.headers.get("content-type"),
             )
+
+        total_ms = (time.perf_counter() - request_received_at) * 1000
+        await metrics.record(
+            RequestRecord(
+                request_id=request_id,
+                timestamp=now_iso(),
+                method=request.method,
+                route=route_label,
+                upstream=upstream_url,
+                status=upstream_response.status_code,
+                total_ms=total_ms,
+                upstream_ms=upstream_ms,
+                injected_delay_ms=injected_delay_ms,
+                faults_fired=outcome.fired,
+            )
+        )
 
         async def body_iterator() -> AsyncIterator[bytes]:
             try:
