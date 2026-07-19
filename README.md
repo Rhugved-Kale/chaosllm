@@ -54,8 +54,8 @@ Three deployables, one repo:
 Verified on a clean Python 3.12 venv with no prior chaosllm install.
 
 ```bash
-git clone https://github.com/Rhugved-Kale/chaosllm.git
-cd chaosllm
+git clone https://github.com/Rhugved-Kale/ChaosLLM.git
+cd ChaosLLM
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 
