@@ -87,11 +87,10 @@ def create_app(
     # doesn't change the actual security posture, it just also lets browser
     # JS do what curl already could. DASHBOARD_ORIGIN restricts it for a
     # hosted deployment if wanted.
+    dashboard_origin = os.environ.get("DASHBOARD_ORIGIN", "").strip()
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=[os.environ["DASHBOARD_ORIGIN"]]
-        if "DASHBOARD_ORIGIN" in os.environ
-        else ["*"],
+        allow_origins=[dashboard_origin] if dashboard_origin else ["*"],
         allow_methods=["GET", "POST", "DELETE"],
         allow_headers=["*"],
     )
