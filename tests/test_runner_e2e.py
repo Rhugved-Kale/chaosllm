@@ -12,12 +12,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
 
 import httpx
+import pytest
 import respx
 import uvicorn
 from fastapi import FastAPI, Request
@@ -303,3 +305,97 @@ assertions:
         async with httpx.AsyncClient(base_url=proxy_url) as client:
             latest = await client.get("/control/runs/latest")
             assert latest.json() == {"run_id": summary.run_id}
+
+
+async def test_run_complete_event_reports_the_chaos_phase_p95_latency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run_complete event used to carry no latency_p95_ms at all, so the
+    dashboard's headline p95 number just kept showing whatever phase's live
+    progress tick had last fired (recovery, since it runs last), silently
+    mismatching the chaos-phase latency_p95_ms assertion shown right next to
+    it. The event's p95 must match the chaos phase's own persisted summary.
+
+    PROGRESS_INTERVAL_S is patched way down so at least one progress event
+    (any event at all publishes the run_id via /control/runs/latest) fires
+    well before run_complete, giving the SSE consumer below a real chance to
+    discover the run_id and subscribe before the single run_complete publish
+    it's actually asserting on. Otherwise, with the suite's usual sub-second
+    phase durations, a run this short can complete and publish before an
+    only-just-scheduled subscriber ever attaches, since the event bus has no
+    replay for late subscribers.
+    """
+    monkeypatch.setattr("chaosllm.runner.runner.PROGRESS_INTERVAL_S", 0.02)
+    proxy_metrics_path = tmp_path / "proxy_metrics.jsonl"
+    proxy_app = create_app(metrics_path=proxy_metrics_path)
+
+    async with _serve(proxy_app) as proxy_url:
+        target_app = _build_target_app(proxy_url)
+        async with _serve(target_app) as target_url:
+            payload_file = tmp_path / "questions.jsonl"
+            payload_file.write_text('{"question": "What is chaos engineering?"}\n')
+
+            spec_path = tmp_path / "spec.yaml"
+            spec_path.write_text(
+                f"""\
+name: p95-event-test
+target:
+  base_url: {target_url}
+  endpoint: POST /ask
+  payload_file: {payload_file}
+load:
+  concurrency: 1
+  duration_s: 0.1
+  warmup_s: 0.1
+assertions:
+  - type: success_rate
+    min: 0.5
+"""
+            )
+
+            with respx.mock(assert_all_called=False) as router:
+                router.route(host="127.0.0.1").pass_through()
+                router.post("https://api.openai.com/v1/chat/completions").mock(
+                    return_value=httpx.Response(
+                        200, json={"choices": [{"message": {"content": "ok"}}]}
+                    )
+                )
+
+                received: list[dict[str, Any]] = []
+
+                async def consume_run_complete(client: httpx.AsyncClient) -> None:
+                    run_id = None
+                    while run_id is None:
+                        latest = await client.get("/control/runs/latest")
+                        run_id = latest.json()["run_id"]
+                        if run_id is None:
+                            await asyncio.sleep(0.01)
+                    async with client.stream("GET", f"/control/runs/{run_id}/events") as resp:
+                        async for line in resp.aiter_lines():
+                            if line.startswith("data: "):
+                                received.append(json.loads(line[len("data: ") :]))
+                                if received[-1].get("type") == "run_complete":
+                                    return
+
+                async with httpx.AsyncClient(base_url=proxy_url) as client:
+                    consumer = asyncio.create_task(consume_run_complete(client))
+
+                    db_path = tmp_path / "chaosllm.db"
+                    summary = await run_experiment(
+                        spec_path,
+                        proxy_url=proxy_url,
+                        db_path=db_path,
+                        runs_dir=tmp_path / "runs",
+                        request_timeout_s=2.0,
+                    )
+                    await asyncio.wait_for(consumer, timeout=2.0)
+
+    store = MetricsStore(db_path)
+    try:
+        chaos_summary = next(
+            s for s in store.get_phase_summaries(summary.run_id) if s.phase == "chaos"
+        )
+    finally:
+        store.close()
+
+    assert received[-1]["latency_p95_ms"] == chaos_summary.latency_p95_ms

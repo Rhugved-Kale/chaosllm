@@ -342,9 +342,10 @@ async def run_experiment(
 
     _write_events(events_path, all_results)
 
+    chaos_summary = summarize_phase(Phase.CHAOS, chaos_results, chaos_fault_fire_counts)
     phase_summaries = [
         summarize_phase(Phase.WARMUP, warmup_results, warmup_fault_fire_counts),
-        summarize_phase(Phase.CHAOS, chaos_results, chaos_fault_fire_counts),
+        chaos_summary,
         summarize_phase(Phase.RECOVERY, recovery_results, recovery_fault_fire_counts),
     ]
     for summary in phase_summaries:
@@ -377,6 +378,7 @@ async def run_experiment(
                 "phase": Phase.CHAOS.value,
                 "total_count": len(chaos_results),
                 "success_count": sum(1 for r in chaos_results if r.success),
+                "latency_p95_ms": chaos_summary.latency_p95_ms,
                 "fault_fire_counts": chaos_fault_fire_counts,
                 "assertions": [
                     {"type": a.type, "passed": a.passed, "detail": a.detail}
