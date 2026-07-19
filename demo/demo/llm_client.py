@@ -94,7 +94,7 @@ _PROVIDER_DEFAULTS: dict[str, dict[str, str]] = {
     "openai": {
         "path": "/openai/v1/chat/completions",
         "model_env": "OPENAI_MODEL",
-        "default_model": "gpt-4o-mini",
+        "default_model": "gpt-5.4-mini",
         "key_env": "OPENAI_API_KEY",
     },
     "anthropic": {
