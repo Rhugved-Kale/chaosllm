@@ -16,7 +16,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
@@ -30,6 +30,7 @@ class PhaseSummary:
     latency_p95_ms: float | None
     latency_p99_ms: float | None
     error_taxonomy: dict[str, int]
+    fault_fire_counts: dict[str, int]
 
 
 @dataclass
@@ -50,6 +51,7 @@ class RunRecord:
     finished_at: str | None
     status: str
     fault_fire_counts: dict[str, int]
+    warnings: list[str]
 
 
 class MetricsStore:
@@ -58,10 +60,37 @@ class MetricsStore:
         self._conn = sqlite3.connect(db_path)
         self._conn.row_factory = sqlite3.Row
         self._conn.executescript(_SCHEMA_PATH.read_text(encoding="utf-8"))
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """Bring an existing (pre-v2) DB up to SCHEMA_VERSION.
+
+        `executescript` above already gives a brand-new DB the current full
+        shape via CREATE TABLE IF NOT EXISTS, so the ALTER statements here
+        are no-ops for it (guarded by _add_column_if_missing) and only do
+        real work against a DB created by an older version of this store.
+        """
         row = self._conn.execute("SELECT version FROM schema_version").fetchone()
-        if row is None:
-            self._conn.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
-            self._conn.commit()
+        current = row["version"] if row is not None else 0
+
+        if current < 1:
+            self._conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+            current = 1
+
+        if current < 2:
+            self._add_column_if_missing(
+                "requests", "fault_fire_counts", "TEXT NOT NULL DEFAULT '{}'"
+            )
+            self._add_column_if_missing("runs", "warnings", "TEXT NOT NULL DEFAULT '[]'")
+            self._conn.execute("UPDATE schema_version SET version = 2")
+            current = 2
+
+        self._conn.commit()
+
+    def _add_column_if_missing(self, table: str, column: str, declaration: str) -> None:
+        existing = {row["name"] for row in self._conn.execute(f"PRAGMA table_info({table})")}
+        if column not in existing:
+            self._conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {declaration}")
 
     def close(self) -> None:
         self._conn.close()
@@ -83,10 +112,18 @@ class MetricsStore:
         finished_at: str,
         status: str,
         fault_fire_counts: dict[str, int],
+        warnings: list[str] | None = None,
     ) -> None:
         self._conn.execute(
-            "UPDATE runs SET finished_at = ?, status = ?, fault_fire_counts = ? WHERE run_id = ?",
-            (finished_at, status, json.dumps(fault_fire_counts), run_id),
+            "UPDATE runs SET finished_at = ?, status = ?, fault_fire_counts = ?, warnings = ? "
+            "WHERE run_id = ?",
+            (
+                finished_at,
+                status,
+                json.dumps(fault_fire_counts),
+                json.dumps(warnings or []),
+                run_id,
+            ),
         )
         self._conn.commit()
 
@@ -94,8 +131,9 @@ class MetricsStore:
         self._conn.execute(
             "INSERT OR REPLACE INTO requests "
             "(run_id, phase, total_count, success_count, error_count, "
-            " latency_p50_ms, latency_p95_ms, latency_p99_ms, error_taxonomy) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " latency_p50_ms, latency_p95_ms, latency_p99_ms, error_taxonomy, "
+            " fault_fire_counts) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 summary.phase,
@@ -106,6 +144,7 @@ class MetricsStore:
                 summary.latency_p95_ms,
                 summary.latency_p99_ms,
                 json.dumps(summary.error_taxonomy),
+                json.dumps(summary.fault_fire_counts),
             ),
         )
         self._conn.commit()
@@ -131,6 +170,7 @@ class MetricsStore:
             finished_at=row["finished_at"],
             status=row["status"],
             fault_fire_counts=json.loads(row["fault_fire_counts"]),
+            warnings=json.loads(row["warnings"]),
         )
 
     def get_phase_summaries(self, run_id: str) -> list[PhaseSummary]:
@@ -147,6 +187,7 @@ class MetricsStore:
                 latency_p95_ms=row["latency_p95_ms"],
                 latency_p99_ms=row["latency_p99_ms"],
                 error_taxonomy=json.loads(row["error_taxonomy"]),
+                fault_fire_counts=json.loads(row["fault_fire_counts"]),
             )
             for row in rows
         ]

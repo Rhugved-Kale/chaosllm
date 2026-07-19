@@ -31,6 +31,13 @@ from chaosllm.spec.models import (
     SuccessRateAssertion,
 )
 
+ZERO_CHAOS_FAULTS_WARNING = (
+    "chaos phase fired zero faults even though {n} fault(s) were configured; "
+    "the fault route likely never saw any traffic (check target.endpoint and "
+    "each fault's route glob against what the target app actually calls "
+    "through the proxy). This run is not a valid chaos signal."
+)
+
 
 @dataclass
 class RunSummary:
@@ -39,6 +46,7 @@ class RunSummary:
     phase_summaries: list[PhaseSummary]
     assertion_results: list[AssertionResult]
     fault_fire_counts: dict[str, int]
+    warnings: list[str]
 
 
 def _percentile(sorted_values: list[float], pct: float) -> float:
@@ -52,7 +60,9 @@ def _percentile(sorted_values: list[float], pct: float) -> float:
     return sorted_values[lower] + (sorted_values[upper] - sorted_values[lower]) * (k - lower)
 
 
-def summarize_phase(phase: Phase, results: list[RequestResult]) -> PhaseSummary:
+def summarize_phase(
+    phase: Phase, results: list[RequestResult], fault_fire_counts: dict[str, int]
+) -> PhaseSummary:
     total = len(results)
     success = sum(1 for r in results if r.success)
     latencies = sorted(r.latency_ms for r in results)
@@ -69,6 +79,7 @@ def summarize_phase(phase: Phase, results: list[RequestResult]) -> PhaseSummary:
         latency_p95_ms=_percentile(latencies, 0.95) if latencies else None,
         latency_p99_ms=_percentile(latencies, 0.99) if latencies else None,
         error_taxonomy=taxonomy,
+        fault_fire_counts=fault_fire_counts,
     )
 
 
@@ -128,7 +139,7 @@ def _has_min_items(result: RequestResult, assertion: JsonFieldPresentAssertion) 
 
 
 def tally_fault_fires(metrics_path: Path, *, start_ts: str, end_ts: str) -> dict[str, int]:
-    """Count fault fires the proxy logged during the chaos phase's time window."""
+    """Count fault fires the proxy logged within a phase's time window."""
     if not metrics_path.exists():
         return {}
     counts: dict[str, int] = {}
@@ -196,6 +207,7 @@ async def run_experiment(
         ):
             await control_client.delete("/control/faults")
 
+            warmup_start_ts = now_iso()
             warmup_results = await run_load(
                 client=target_client,
                 method=method,
@@ -206,13 +218,14 @@ async def run_experiment(
                 phase=Phase.WARMUP,
                 request_timeout_s=request_timeout_s,
             )
+            warmup_end_ts = now_iso()
             all_results += warmup_results
 
-            chaos_start_ts = now_iso()
             if spec.faults:
                 faults_body = {"faults": [f.model_dump(mode="json") for f in spec.faults]}
                 await control_client.post("/control/faults", json=faults_body)
 
+            chaos_start_ts = now_iso()
             chaos_results = await run_load(
                 client=target_client,
                 method=method,
@@ -228,6 +241,7 @@ async def run_experiment(
 
             await control_client.delete("/control/faults")
 
+            recovery_start_ts = now_iso()
             recovery_results = await run_load(
                 client=target_client,
                 method=method,
@@ -238,6 +252,7 @@ async def run_experiment(
                 phase=Phase.RECOVERY,
                 request_timeout_s=request_timeout_s,
             )
+            recovery_end_ts = now_iso()
             all_results += recovery_results
     except Exception:
         _write_events(events_path, all_results)
@@ -249,10 +264,20 @@ async def run_experiment(
 
     _write_events(events_path, all_results)
 
+    warmup_fault_fire_counts = tally_fault_fires(
+        proxy_metrics_path, start_ts=warmup_start_ts, end_ts=warmup_end_ts
+    )
+    chaos_fault_fire_counts = tally_fault_fires(
+        proxy_metrics_path, start_ts=chaos_start_ts, end_ts=chaos_end_ts
+    )
+    recovery_fault_fire_counts = tally_fault_fires(
+        proxy_metrics_path, start_ts=recovery_start_ts, end_ts=recovery_end_ts
+    )
+
     phase_summaries = [
-        summarize_phase(Phase.WARMUP, warmup_results),
-        summarize_phase(Phase.CHAOS, chaos_results),
-        summarize_phase(Phase.RECOVERY, recovery_results),
+        summarize_phase(Phase.WARMUP, warmup_results, warmup_fault_fire_counts),
+        summarize_phase(Phase.CHAOS, chaos_results, chaos_fault_fire_counts),
+        summarize_phase(Phase.RECOVERY, recovery_results, recovery_fault_fire_counts),
     ]
     for summary in phase_summaries:
         store.record_phase_summary(run_id, summary)
@@ -261,14 +286,17 @@ async def run_experiment(
     for result in assertion_results:
         store.record_assertion(run_id, result)
 
-    fault_fire_counts = tally_fault_fires(
-        proxy_metrics_path, start_ts=chaos_start_ts, end_ts=chaos_end_ts
-    )
+    warnings: list[str] = []
+    if spec.faults and sum(chaos_fault_fire_counts.values()) == 0:
+        warnings.append(ZERO_CHAOS_FAULTS_WARNING.format(n=len(spec.faults)))
+    status = "invalid" if warnings else "completed"
+
     store.finish_run(
         run_id=run_id,
         finished_at=now_iso(),
-        status="completed",
-        fault_fire_counts=fault_fire_counts,
+        status=status,
+        fault_fire_counts=chaos_fault_fire_counts,
+        warnings=warnings,
     )
     store.close()
 
@@ -277,5 +305,6 @@ async def run_experiment(
         spec=spec,
         phase_summaries=phase_summaries,
         assertion_results=assertion_results,
-        fault_fire_counts=fault_fire_counts,
+        fault_fire_counts=chaos_fault_fire_counts,
+        warnings=warnings,
     )

@@ -21,8 +21,10 @@ def _phase_row(summary: PhaseSummary) -> str:
     p50 = f"{summary.latency_p50_ms:.0f}" if summary.latency_p50_ms is not None else "-"
     p95 = f"{summary.latency_p95_ms:.0f}" if summary.latency_p95_ms is not None else "-"
     p99 = f"{summary.latency_p99_ms:.0f}" if summary.latency_p99_ms is not None else "-"
+    faults_fired = sum(summary.fault_fire_counts.values())
     return (
-        f"| {summary.phase} | {summary.total_count} | {success_rate:.1%} | {p50} | {p95} | {p99} |"
+        f"| {summary.phase} | {summary.total_count} | {success_rate:.1%} "
+        f"| {p50} | {p95} | {p99} | {faults_fired} |"
     )
 
 
@@ -73,11 +75,18 @@ def render_markdown(store: MetricsStore, run_id: str) -> str:
         f"- status: {run.status}",
         f"- started: {run.started_at}",
         f"- finished: {run.finished_at or '-'}",
+    ]
+
+    if run.warnings:
+        lines += ["", "## Warnings", ""]
+        lines += [f"- {warning}" for warning in run.warnings]
+
+    lines += [
         "",
         "## Per-phase results",
         "",
-        "| phase | requests | success rate | p50 ms | p95 ms | p99 ms |",
-        "|---|---|---|---|---|---|",
+        "| phase | requests | success rate | p50 ms | p95 ms | p99 ms | faults fired |",
+        "|---|---|---|---|---|---|---|",
     ]
     lines += [_phase_row(s) for s in phase_summaries]
 

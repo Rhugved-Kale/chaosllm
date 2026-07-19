@@ -5,7 +5,8 @@
 #
 # chaosllm's own demo app (demo/) uses an in-process chromadb store instead
 # (DESIGN.md 4.6), so it has no such HTTP hop to fault-inject against; see
-# llm-timeout-spike.yaml for the spec that's actually runnable against it.
+# llm-timeout-spike.yaml and llm-latency-spike.yaml for specs that are
+# actually runnable against it.
 name: vector-db-latency-spike
 description: RAG behavior when retrieval latency exceeds 200ms
 target:
