@@ -144,13 +144,98 @@ assertions:
     assert summary.fault_fire_counts.get("error", 0) > 0
     assert summary.assertion_results[0].passed is False
 
+    # The fault actually fired during chaos, so this is a valid run: no
+    # warnings, and warmup/recovery (faults off) fired nothing.
+    assert summary.warnings == []
+    assert by_phase["chaos"].fault_fire_counts.get("error", 0) > 0
+    assert by_phase["warmup"].fault_fire_counts == {}
+    assert by_phase["recovery"].fault_fire_counts == {}
+
     store = MetricsStore(db_path)
     try:
         markdown = render_markdown(store, summary.run_id)
+        run = store.get_run(summary.run_id)
     finally:
         store.close()
 
+    assert run is not None
+    assert run.status == "completed"
     assert "Resilience report: e2e-test" in markdown
     assert "Success rate dropped" in markdown
     assert "[FAIL] `success_rate`" in markdown
     assert "<svg" in markdown
+    assert "## Warnings" not in markdown
+
+
+async def test_invalid_run_when_chaos_fault_route_never_carries_traffic(tmp_path: Path) -> None:
+    """The vector-db-slow.yaml bug: a fault configured on a route the target
+    app never calls fires zero times all experiment long. That's not a
+    passing resilience result, it's a broken experiment, and the run must
+    say so.
+    """
+    proxy_metrics_path = tmp_path / "proxy_metrics.jsonl"
+    proxy_app = create_app(metrics_path=proxy_metrics_path)
+
+    async with _serve(proxy_app) as proxy_url:
+        target_app = _build_target_app(proxy_url)
+        async with _serve(target_app) as target_url:
+            payload_file = tmp_path / "questions.jsonl"
+            payload_file.write_text('{"question": "What is chaos engineering?"}\n')
+
+            spec_path = tmp_path / "spec.yaml"
+            spec_path.write_text(
+                f"""\
+name: vacuous-fault-test
+target:
+  base_url: {target_url}
+  endpoint: POST /ask
+  payload_file: {payload_file}
+load:
+  concurrency: 1
+  duration_s: 0.2
+  warmup_s: 0.1
+faults:
+  - id: latency
+    route: /passthrough/vectordb/*
+    delay_ms: 100
+    p: 1.0
+assertions:
+  - type: success_rate
+    min: 0.5
+"""
+            )
+
+            with respx.mock(assert_all_called=False) as router:
+                router.route(host="127.0.0.1").pass_through()
+                router.post("https://api.openai.com/v1/chat/completions").mock(
+                    return_value=httpx.Response(
+                        200, json={"choices": [{"message": {"content": "an answer"}}]}
+                    )
+                )
+
+                db_path = tmp_path / "chaosllm.db"
+                summary = await run_experiment(
+                    spec_path,
+                    proxy_url=proxy_url,
+                    proxy_metrics_path=proxy_metrics_path,
+                    db_path=db_path,
+                    runs_dir=tmp_path / "runs",
+                    request_timeout_s=2.0,
+                )
+
+    assert summary.fault_fire_counts == {}
+    assert summary.warnings != []
+    assert "zero faults" in summary.warnings[0]
+
+    store = MetricsStore(db_path)
+    try:
+        run = store.get_run(summary.run_id)
+        markdown = render_markdown(store, summary.run_id)
+    finally:
+        store.close()
+
+    assert run is not None
+    assert run.status == "invalid"
+    assert run.warnings == summary.warnings
+    assert "## Warnings" in markdown
+    assert "zero faults" in markdown

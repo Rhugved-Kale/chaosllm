@@ -1,0 +1,37 @@
+# Actually carries traffic against demo/ (unlike vector-db-slow.yaml): the
+# demo app's one real network hop through the proxy is its LLM call, so
+# faulting /anthropic/* (or /openai/*, depending on LLM_PROVIDER) is the
+# only route that ever sees a request. Faulting /passthrough/vectordb/* is
+# vacuous here since retrieval is in-process chromadb (DESIGN.md 4.6) and
+# never goes through the proxy at all.
+name: llm-latency-spike
+description: RAG behavior when the Anthropic LLM call is slow and rate-limited
+target:
+  base_url: http://localhost:8100
+  endpoint: POST /ask
+  payload_file: payloads/questions.jsonl
+load:
+  concurrency: 8
+  duration_s: 120
+  warmup_s: 15
+faults:
+  - id: latency
+    route: /anthropic/*
+    delay_ms: 2000
+    jitter_ms: 500
+    p: 0.5
+  - id: rate_limit_burst
+    route: /anthropic/*
+    limit: 5
+    window_s: 10
+assertions:
+  - type: success_rate
+    min: 0.95
+  - type: latency_p95_ms
+    max: 4000
+  - type: response_contains
+    field: answer
+    forbid_empty: true
+  - type: json_field_present
+    field: citations
+    min_items: 1

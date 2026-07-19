@@ -64,6 +64,9 @@ def run(
     finally:
         store.close()
 
+    for warning in summary.warnings:
+        typer.echo(f"warning: {warning}", err=True)
+
 
 @app.command()
 def report(
