@@ -1,9 +1,11 @@
-"""MetricsStore upgrades a pre-v2 (schema_version=1) DB in place.
+"""MetricsStore upgrades a pre-v2 (schema_version=1) DB in place, all the way
+to the current version.
 
-v2 added requests.fault_fire_counts and runs.warnings. A DB created by the
-v1 store (no schema_version row at all, or version=1 with neither column)
-must open cleanly, gain the new columns with their defaults, and end up at
-schema_version=2, without losing any existing rows.
+v2 added requests.fault_fire_counts and runs.warnings. v3 added
+requests.degraded_count. A DB created by the v1 store (no schema_version row
+at all, or version=1 with none of these columns) must open cleanly, gain
+every new column with its default, and end up at the current
+SCHEMA_VERSION, without losing any existing rows.
 """
 
 from __future__ import annotations
@@ -86,7 +88,8 @@ def test_migrates_v1_database_and_preserves_existing_rows(tmp_path: Path) -> Non
         phases = store.get_phase_summaries("old-run-1")
         assert len(phases) == 1
         assert phases[0].total_count == 10
-        assert phases[0].fault_fire_counts == {}  # new column, defaulted
+        assert phases[0].fault_fire_counts == {}  # v2 column, defaulted
+        assert phases[0].degraded_count == 0  # v3 column, defaulted
     finally:
         store.close()
 
@@ -101,6 +104,84 @@ def test_migration_is_idempotent_across_repeated_opens(tmp_path: Path) -> None:
         version_row = store._conn.execute("SELECT version FROM schema_version").fetchone()
         assert version_row["version"] == SCHEMA_VERSION
         assert store.get_run("old-run-1") is not None
+    finally:
+        store.close()
+
+
+def _create_v2_database(db_path: Path) -> None:
+    conn = sqlite3.connect(db_path)
+    try:
+        conn.executescript(
+            """
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (2);
+
+            CREATE TABLE runs (
+                run_id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                spec_path TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                finished_at TEXT,
+                status TEXT NOT NULL DEFAULT 'running',
+                fault_fire_counts TEXT NOT NULL DEFAULT '{}',
+                warnings TEXT NOT NULL DEFAULT '[]'
+            );
+
+            CREATE TABLE requests (
+                run_id TEXT NOT NULL REFERENCES runs (run_id),
+                phase TEXT NOT NULL,
+                total_count INTEGER NOT NULL,
+                success_count INTEGER NOT NULL,
+                error_count INTEGER NOT NULL,
+                latency_p50_ms REAL,
+                latency_p95_ms REAL,
+                latency_p99_ms REAL,
+                error_taxonomy TEXT NOT NULL DEFAULT '{}',
+                fault_fire_counts TEXT NOT NULL DEFAULT '{}',
+                PRIMARY KEY (run_id, phase)
+            );
+
+            CREATE TABLE assertions (
+                run_id TEXT NOT NULL REFERENCES runs (run_id),
+                idx INTEGER NOT NULL,
+                type TEXT NOT NULL,
+                passed INTEGER NOT NULL,
+                detail TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (run_id, idx)
+            );
+
+            INSERT INTO runs
+                (run_id, name, spec_path, started_at, status, fault_fire_counts, warnings)
+            VALUES ('v2-run-1', 'v2-run', 'spec.yaml', '2026-01-01T00:00:00+00:00',
+                    'completed', '{"latency": 5}', '[]');
+
+            INSERT INTO requests
+                (run_id, phase, total_count, success_count, error_count, fault_fire_counts)
+            VALUES ('v2-run-1', 'chaos', 10, 9, 1, '{"latency": 5}');
+            """
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def test_migrates_v2_database_and_preserves_existing_rows(tmp_path: Path) -> None:
+    db_path = tmp_path / "v2.db"
+    _create_v2_database(db_path)
+
+    store = MetricsStore(db_path)
+    try:
+        version_row = store._conn.execute("SELECT version FROM schema_version").fetchone()
+        assert version_row["version"] == SCHEMA_VERSION
+
+        run = store.get_run("v2-run-1")
+        assert run is not None
+        assert run.fault_fire_counts == {"latency": 5}
+
+        phases = store.get_phase_summaries("v2-run-1")
+        assert phases[0].fault_fire_counts == {"latency": 5}
+        assert phases[0].degraded_count == 0  # v3 column, defaulted
     finally:
         store.close()
 

@@ -24,6 +24,7 @@ from chaosllm.runner.loadgen import (
 from chaosllm.runner.phases import Phase
 from chaosllm.spec.loader import load_experiment_spec
 from chaosllm.spec.models import (
+    DegradedRateAssertion,
     ExperimentSpec,
     JsonFieldPresentAssertion,
     LatencyP95Assertion,
@@ -65,6 +66,7 @@ def summarize_phase(
 ) -> PhaseSummary:
     total = len(results)
     success = sum(1 for r in results if r.success)
+    degraded = sum(1 for r in results if r.success and r.degraded)
     latencies = sorted(r.latency_ms for r in results)
     taxonomy: dict[str, int] = {}
     for r in results:
@@ -80,6 +82,7 @@ def summarize_phase(
         latency_p99_ms=_percentile(latencies, 0.99) if latencies else None,
         error_taxonomy=taxonomy,
         fault_fire_counts=fault_fire_counts,
+        degraded_count=degraded,
     )
 
 
@@ -124,6 +127,14 @@ def evaluate_assertions(
                 f"{ok}/{len(successes)} successful responses had "
                 f">= {assertion.min_items} '{assertion.field}' item(s)"
             )
+        elif isinstance(assertion, DegradedRateAssertion):
+            degraded = sum(1 for r in successes if r.degraded)
+            rate = (degraded / len(successes)) if successes else 0.0
+            passed = rate <= assertion.max
+            detail = (
+                f"degraded_rate={rate:.3f} (max={assertion.max}), "
+                f"{degraded}/{len(successes)} successes"
+            )
         else:  # pragma: no cover - exhaustive over the Assertion union
             passed = False
             detail = "unknown assertion type"
@@ -138,20 +149,23 @@ def _has_min_items(result: RequestResult, assertion: JsonFieldPresentAssertion) 
     return isinstance(value, list) and len(value) >= assertion.min_items
 
 
-def tally_fault_fires(metrics_path: Path, *, start_ts: str, end_ts: str) -> dict[str, int]:
-    """Count fault fires the proxy logged within a phase's time window."""
-    if not metrics_path.exists():
-        return {}
-    counts: dict[str, int] = {}
-    for line in metrics_path.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        record = json.loads(line)
-        timestamp = record.get("timestamp", "")
-        if not (start_ts <= timestamp <= end_ts):
-            continue
-        for fault_id in record.get("faults_fired", []):
-            counts[fault_id] = counts.get(fault_id, 0) + 1
+async def query_fault_fire_counts(
+    control_client: httpx.AsyncClient, *, since: str, until: str
+) -> dict[str, int]:
+    """Fault-fire counts for a phase's time window, from the proxy's own metrics.
+
+    Calls the proxy's control API (GET /control/metrics/summary) rather than
+    reading a metrics.jsonl file path directly: the proxy may run in a
+    different process or container than the runner, in which case a file
+    path on the runner's own filesystem points at nothing (or a stale file
+    from an earlier standalone run), and every fault tally silently comes
+    back zero regardless of what actually fired.
+    """
+    response = await control_client.get(
+        "/control/metrics/summary", params={"since": since, "until": until}
+    )
+    response.raise_for_status()
+    counts: dict[str, int] = response.json()["fault_fire_counts"]
     return counts
 
 
@@ -179,7 +193,6 @@ async def run_experiment(
     spec_path: Path,
     *,
     proxy_url: str = "http://127.0.0.1:8000",
-    proxy_metrics_path: Path = Path("metrics.jsonl"),
     db_path: Path = Path("chaosllm.db"),
     runs_dir: Path = Path("runs"),
     request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
@@ -220,6 +233,9 @@ async def run_experiment(
             )
             warmup_end_ts = now_iso()
             all_results += warmup_results
+            warmup_fault_fire_counts = await query_fault_fire_counts(
+                control_client, since=warmup_start_ts, until=warmup_end_ts
+            )
 
             if spec.faults:
                 faults_body = {"faults": [f.model_dump(mode="json") for f in spec.faults]}
@@ -238,6 +254,9 @@ async def run_experiment(
             )
             chaos_end_ts = now_iso()
             all_results += chaos_results
+            chaos_fault_fire_counts = await query_fault_fire_counts(
+                control_client, since=chaos_start_ts, until=chaos_end_ts
+            )
 
             await control_client.delete("/control/faults")
 
@@ -254,6 +273,9 @@ async def run_experiment(
             )
             recovery_end_ts = now_iso()
             all_results += recovery_results
+            recovery_fault_fire_counts = await query_fault_fire_counts(
+                control_client, since=recovery_start_ts, until=recovery_end_ts
+            )
     except Exception:
         _write_events(events_path, all_results)
         store.finish_run(
@@ -263,16 +285,6 @@ async def run_experiment(
         raise
 
     _write_events(events_path, all_results)
-
-    warmup_fault_fire_counts = tally_fault_fires(
-        proxy_metrics_path, start_ts=warmup_start_ts, end_ts=warmup_end_ts
-    )
-    chaos_fault_fire_counts = tally_fault_fires(
-        proxy_metrics_path, start_ts=chaos_start_ts, end_ts=chaos_end_ts
-    )
-    recovery_fault_fire_counts = tally_fault_fires(
-        proxy_metrics_path, start_ts=recovery_start_ts, end_ts=recovery_end_ts
-    )
 
     phase_summaries = [
         summarize_phase(Phase.WARMUP, warmup_results, warmup_fault_fire_counts),

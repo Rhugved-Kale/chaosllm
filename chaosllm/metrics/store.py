@@ -16,7 +16,7 @@ import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 _SCHEMA_PATH = Path(__file__).parent / "schema.sql"
 
 
@@ -31,6 +31,7 @@ class PhaseSummary:
     latency_p99_ms: float | None
     error_taxonomy: dict[str, int]
     fault_fire_counts: dict[str, int]
+    degraded_count: int
 
 
 @dataclass
@@ -63,7 +64,7 @@ class MetricsStore:
         self._migrate()
 
     def _migrate(self) -> None:
-        """Bring an existing (pre-v2) DB up to SCHEMA_VERSION.
+        """Bring an existing (pre-v3) DB up to SCHEMA_VERSION.
 
         `executescript` above already gives a brand-new DB the current full
         shape via CREATE TABLE IF NOT EXISTS, so the ALTER statements here
@@ -84,6 +85,11 @@ class MetricsStore:
             self._add_column_if_missing("runs", "warnings", "TEXT NOT NULL DEFAULT '[]'")
             self._conn.execute("UPDATE schema_version SET version = 2")
             current = 2
+
+        if current < 3:
+            self._add_column_if_missing("requests", "degraded_count", "INTEGER NOT NULL DEFAULT 0")
+            self._conn.execute("UPDATE schema_version SET version = 3")
+            current = 3
 
         self._conn.commit()
 
@@ -132,8 +138,8 @@ class MetricsStore:
             "INSERT OR REPLACE INTO requests "
             "(run_id, phase, total_count, success_count, error_count, "
             " latency_p50_ms, latency_p95_ms, latency_p99_ms, error_taxonomy, "
-            " fault_fire_counts) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " fault_fire_counts, degraded_count) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 run_id,
                 summary.phase,
@@ -145,6 +151,7 @@ class MetricsStore:
                 summary.latency_p99_ms,
                 json.dumps(summary.error_taxonomy),
                 json.dumps(summary.fault_fire_counts),
+                summary.degraded_count,
             ),
         )
         self._conn.commit()
@@ -188,6 +195,7 @@ class MetricsStore:
                 latency_p99_ms=row["latency_p99_ms"],
                 error_taxonomy=json.loads(row["error_taxonomy"]),
                 fault_fire_counts=json.loads(row["fault_fire_counts"]),
+                degraded_count=row["degraded_count"],
             )
             for row in rows
         ]

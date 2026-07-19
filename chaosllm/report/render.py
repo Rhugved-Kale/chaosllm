@@ -18,13 +18,14 @@ class RunNotFoundError(Exception):
 
 def _phase_row(summary: PhaseSummary) -> str:
     success_rate = summary.success_count / summary.total_count if summary.total_count else 0.0
+    degraded_rate = summary.degraded_count / summary.success_count if summary.success_count else 0.0
     p50 = f"{summary.latency_p50_ms:.0f}" if summary.latency_p50_ms is not None else "-"
     p95 = f"{summary.latency_p95_ms:.0f}" if summary.latency_p95_ms is not None else "-"
     p99 = f"{summary.latency_p99_ms:.0f}" if summary.latency_p99_ms is not None else "-"
     faults_fired = sum(summary.fault_fire_counts.values())
     return (
         f"| {summary.phase} | {summary.total_count} | {success_rate:.1%} "
-        f"| {p50} | {p95} | {p99} | {faults_fired} |"
+        f"| {degraded_rate:.1%} | {p50} | {p95} | {p99} | {faults_fired} |"
     )
 
 
@@ -56,6 +57,12 @@ def _summary_sentence(phase_summaries: list[PhaseSummary]) -> str | None:
     if chaos.error_taxonomy and chaos.error_count:
         top_kind, top_count = max(chaos.error_taxonomy.items(), key=lambda kv: kv[1])
         sentence += f" {top_count / chaos.error_count:.0%} of failures were {top_kind}."
+    if chaos.success_count and chaos.degraded_count:
+        degraded_rate = chaos.degraded_count / chaos.success_count
+        sentence += (
+            f" {degraded_rate:.0%} of chaos-phase 'successes' were degraded fallback answers, "
+            "not full success."
+        )
     return sentence
 
 
@@ -85,8 +92,9 @@ def render_markdown(store: MetricsStore, run_id: str) -> str:
         "",
         "## Per-phase results",
         "",
-        "| phase | requests | success rate | p50 ms | p95 ms | p99 ms | faults fired |",
-        "|---|---|---|---|---|---|---|",
+        "| phase | requests | success rate | degraded rate | p50 ms | p95 ms | p99 ms "
+        "| faults fired |",
+        "|---|---|---|---|---|---|---|---|",
     ]
     lines += [_phase_row(s) for s in phase_summaries]
 

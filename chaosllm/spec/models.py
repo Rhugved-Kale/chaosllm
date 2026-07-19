@@ -48,11 +48,25 @@ class JsonFieldPresentAssertion(BaseModel):
     min_items: int = Field(default=1, ge=0)
 
 
+class DegradedRateAssertion(BaseModel):
+    """Caps what fraction of *successful* responses were degraded fallbacks.
+
+    A resilient app can look perfectly healthy on success_rate alone while
+    quietly serving a degraded (e.g. extractive-only) answer for every
+    request; this catches that instead of letting a graceful fallback read
+    as a clean pass.
+    """
+
+    type: Literal["degraded_rate"] = "degraded_rate"
+    max: float = Field(ge=0.0, le=1.0)
+
+
 Assertion = Annotated[
     SuccessRateAssertion
     | LatencyP95Assertion
     | ResponseContainsAssertion
-    | JsonFieldPresentAssertion,
+    | JsonFieldPresentAssertion
+    | DegradedRateAssertion,
     Field(discriminator="type"),
 ]
 

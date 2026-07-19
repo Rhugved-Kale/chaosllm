@@ -33,6 +33,7 @@ class RequestResult:
     success: bool
     error_kind: str | None
     response_json: dict[str, Any] | None
+    degraded: bool = False
 
 
 def load_payloads(payload_file: Path) -> list[dict[str, Any]]:
@@ -126,6 +127,7 @@ async def _send_one(
             response_json=body,
         )
 
+    degraded = isinstance(body, dict) and body.get("degraded") is True
     return RequestResult(
         phase=phase,
         timestamp=now_iso(),
@@ -134,4 +136,5 @@ async def _send_one(
         success=True,
         error_kind=None,
         response_json=body,
+        degraded=degraded,
     )
