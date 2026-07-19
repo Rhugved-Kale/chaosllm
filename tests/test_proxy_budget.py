@@ -3,6 +3,8 @@ real usage, passthrough routes are never budgeted."""
 
 from __future__ import annotations
 
+import gzip
+import json
 from pathlib import Path
 
 import httpx
@@ -90,6 +92,39 @@ async def test_passthrough_routes_are_never_budgeted(tmp_path: Path) -> None:
             resp = await client.get("/passthrough/vectordb/health")
 
     assert resp.status_code == 200
+
+
+async def test_gzip_encoded_upstream_response_is_forwarded_decoded(tmp_path: Path) -> None:
+    """Cost tracking buffers the response via `.aread()`, which httpx
+    transparently gunzips. Forwarding the original content-encoding header
+    alongside that already-decoded body would make the downstream client try
+    to gunzip plain bytes and fail; this was a real bug found live against a
+    hosted Anthropic deployment (gzip is routine over the real network,
+    unlike respx's uncompressed-by-default mocks in the other tests here)."""
+    budget = BudgetTracker(daily_cap_usd=1.0)
+    asgi_app = create_app(metrics_path=tmp_path / "metrics.jsonl", budget_tracker=budget)
+    payload = json.dumps(
+        {
+            "content": [{"type": "text", "text": "hi"}],
+            "usage": {"input_tokens": 1, "output_tokens": 1},
+        }
+    ).encode()
+
+    with respx.mock(assert_all_called=True) as mock:
+        mock.post("https://api.anthropic.com/v1/messages").mock(
+            return_value=httpx.Response(
+                200,
+                content=gzip.compress(payload),
+                headers={"content-encoding": "gzip", "content-type": "application/json"},
+            )
+        )
+        transport = httpx.ASGITransport(app=asgi_app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://proxy") as client:
+            resp = await client.post("/anthropic/v1/messages", json={"model": "claude-haiku-4-5"})
+
+    assert resp.status_code == 200
+    assert resp.headers.get("content-encoding") is None
+    assert resp.json()["content"][0]["text"] == "hi"
 
 
 async def test_streaming_request_is_not_buffered_for_cost_tracking(tmp_path: Path) -> None:
