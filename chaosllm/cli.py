@@ -15,6 +15,7 @@ from chaosllm.proxy.app import create_app
 from chaosllm.proxy.config import ProxyConfig
 from chaosllm.report.render import RunNotFoundError, render_json, render_markdown
 from chaosllm.runner.runner import run_experiment
+from chaosllm.spec.loader import SpecValidationError
 
 app = typer.Typer(help="Chaos engineering for LLM-powered applications.")
 
@@ -38,7 +39,7 @@ def proxy(
 
 @app.command()
 def run(
-    spec: Path = typer.Argument(..., help="Path to an experiment YAML spec."),
+    spec: Path = typer.Argument(..., exists=True, help="Path to an experiment YAML spec."),
     proxy_url: str = typer.Option(
         "http://127.0.0.1:8000", help="Base URL of the running proxy's control API."
     ),
@@ -46,14 +47,19 @@ def run(
     runs_dir: Path = typer.Option(Path("runs"), help="Directory for per-run JSONL event logs."),
 ) -> None:
     """Run an experiment against a target app and print its report."""
-    summary = asyncio.run(
-        run_experiment(
-            spec,
-            proxy_url=proxy_url,
-            db_path=db,
-            runs_dir=runs_dir,
+    try:
+        summary = asyncio.run(
+            run_experiment(
+                spec,
+                proxy_url=proxy_url,
+                db_path=db,
+                runs_dir=runs_dir,
+            )
         )
-    )
+    except SpecValidationError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(code=1) from None
+
     store = MetricsStore(db)
     try:
         typer.echo(render_markdown(store, summary.run_id))
