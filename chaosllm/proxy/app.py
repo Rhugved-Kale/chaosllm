@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
@@ -15,6 +16,7 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from chaosllm.faults.pipeline import FaultPipeline
@@ -79,6 +81,20 @@ def create_app(
             await app.state.client.aclose()
 
     app = FastAPI(title="chaosllm-proxy", lifespan=lifespan)
+    # The dashboard (DESIGN.md 4.7) is a separate origin calling the control
+    # API's read endpoints from the browser. This tool has no auth or
+    # multi-tenancy by design (DESIGN.md 4.1), so a permissive default here
+    # doesn't change the actual security posture, it just also lets browser
+    # JS do what curl already could. DASHBOARD_ORIGIN restricts it for a
+    # hosted deployment if wanted.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[os.environ["DASHBOARD_ORIGIN"]]
+        if "DASHBOARD_ORIGIN" in os.environ
+        else ["*"],
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["*"],
+    )
     app.state.config = config or ProxyConfig()
     app.state.metrics = MetricsTap(metrics_path or Path("metrics.jsonl"))
     app.state.client = client or httpx.AsyncClient()
