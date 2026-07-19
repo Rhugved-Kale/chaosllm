@@ -20,9 +20,17 @@ faults:
     delay_ms: 2000
     jitter_ms: 500
     p: 0.5
+  # limit: 5 (the original value) saturates the resilient demo's circuit
+  # breaker (failure_threshold=3) almost instantly at concurrency=8: once
+  # open, retries stop hitting the proxy at all, so the rate limiter itself
+  # stops counting, and the breaker just cycles open/closed near-continuously.
+  # In practice that showed up as ~99.6% of chaos-phase "successes" being the
+  # degraded extractive fallback rather than a real answer, every run. 20
+  # still trips the breaker regularly but lets enough real calls through to
+  # show a mixed real-vs-degraded picture instead of near-total saturation.
   - id: rate_limit_burst
     route: /anthropic/*
-    limit: 5
+    limit: 20
     window_s: 10
 assertions:
   - type: success_rate
