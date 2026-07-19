@@ -19,5 +19,10 @@ services:
     environment:
       PROXY_BASE_URL: http://proxy:8000
       RESILIENT: ${RESILIENT:-false}
+      LLM_PROVIDER: ${LLM_PROVIDER:-openai}
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      OPENAI_MODEL: ${OPENAI_MODEL:-gpt-4o-mini}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-haiku-4-5}
     depends_on:
       - proxy

@@ -19,7 +19,19 @@ def _reset_circuit_breaker() -> None:
 
 
 @pytest.fixture
-async def client() -> AsyncIterator[httpx.AsyncClient]:
+def _default_provider_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The app now fails fast at startup without a provider key (see
+    # llm_client.load_provider_config). Give tests a default openai key so
+    # the `client` fixture's lifespan startup succeeds; tests that care
+    # about a specific provider/missing-key scenario override this
+    # themselves via the same monkeypatch fixture.
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+    monkeypatch.delenv("LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("ANTHROPIC_API_KEY", raising=False)
+
+
+@pytest.fixture
+async def client(_default_provider_env: None) -> AsyncIterator[httpx.AsyncClient]:
     async with app.router.lifespan_context(app):
         transport = ASGITransport(app=app, raise_app_exceptions=False)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as http_client:
