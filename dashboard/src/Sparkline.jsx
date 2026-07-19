@@ -6,11 +6,26 @@ const HEIGHT = 60;
 const PADDING = 4;
 
 export default function Sparkline({ values, label }) {
-  if (values.length < 2) {
+  if (values.length === 0) {
     return (
       <div className="sparkline">
         <div className="sparkline-label">{label}</div>
         <div className="sparkline-empty">collecting data…</div>
+      </div>
+    );
+  }
+
+  // A single point has no line to draw (and dividing by values.length - 1
+  // below would divide by zero), but a reader landing on a finished run
+  // over SSE replay (only the last event, not the whole history) only ever
+  // gets one: show the known value instead of claiming to still be
+  // "collecting data" about a run that's already over.
+  if (values.length === 1) {
+    return (
+      <div className="sparkline">
+        <div className="sparkline-label">
+          {label} <span className="sparkline-latest">{values[0].toFixed(0)}</span>
+        </div>
       </div>
     );
   }
