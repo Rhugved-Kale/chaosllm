@@ -6,6 +6,8 @@ pipeline (DESIGN.md 4.2) first, and logging every request to the metrics tap.
 from __future__ import annotations
 
 import asyncio
+import json
+import os
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
@@ -14,10 +16,19 @@ from pathlib import Path
 
 import httpx
 from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
 from chaosllm.faults.pipeline import FaultPipeline
+from chaosllm.metrics.events import EventBus
 from chaosllm.metrics.tap import MetricsTap, RequestRecord, now_iso
+from chaosllm.proxy.budget import (
+    BudgetTracker,
+    budget_exceeded_body,
+    budget_tracker_from_env,
+    estimate_cost_usd,
+    parse_usage,
+)
 from chaosllm.proxy.config import ProxyConfig
 from chaosllm.proxy.control import router as control_router
 
@@ -52,13 +63,14 @@ def create_app(
     metrics_path: Path | None = None,
     client: httpx.AsyncClient | None = None,
     fault_pipeline: FaultPipeline | None = None,
+    budget_tracker: BudgetTracker | None = None,
 ) -> FastAPI:
     """Build the proxy ASGI app.
 
-    config/metrics_path/client/fault_pipeline are constructor parameters
-    rather than globals or env reads so tests can build one isolated app per
-    respx mock, metrics file, and fault set, with no shared state between
-    tests.
+    config/metrics_path/client/fault_pipeline/budget_tracker are constructor
+    parameters rather than globals or env reads so tests can build one
+    isolated app per respx mock, metrics file, fault set, and budget cap,
+    with no shared state between tests.
     """
     owns_client = client is None
 
@@ -69,26 +81,100 @@ def create_app(
             await app.state.client.aclose()
 
     app = FastAPI(title="chaosllm-proxy", lifespan=lifespan)
+    # The dashboard (DESIGN.md 4.7) is a separate origin calling the control
+    # API's read endpoints from the browser. This tool has no auth or
+    # multi-tenancy by design (DESIGN.md 4.1), so a permissive default here
+    # doesn't change the actual security posture, it just also lets browser
+    # JS do what curl already could. DASHBOARD_ORIGIN restricts it for a
+    # hosted deployment if wanted.
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=[os.environ["DASHBOARD_ORIGIN"]]
+        if "DASHBOARD_ORIGIN" in os.environ
+        else ["*"],
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["*"],
+    )
     app.state.config = config or ProxyConfig()
     app.state.metrics = MetricsTap(metrics_path or Path("metrics.jsonl"))
     app.state.client = client or httpx.AsyncClient()
     app.state.fault_pipeline = fault_pipeline or FaultPipeline()
+    app.state.budget_tracker = budget_tracker or budget_tracker_from_env()
+    app.state.event_bus = EventBus()
     app.include_router(control_router)
 
     async def _proxy(
-        request: Request, upstream_base: str, upstream_path: str, route_label: str
+        request: Request,
+        upstream_base: str,
+        upstream_path: str,
+        route_label: str,
+        *,
+        provider: str | None = None,
     ) -> Response:
+        """provider is set (openai/anthropic) only for the two budgeted
+        routes; passthrough targets (vector DBs, etc.) are never budgeted.
+        """
         request_received_at = time.perf_counter()
         http_client: httpx.AsyncClient = app.state.client
         metrics: MetricsTap = app.state.metrics
         pipeline: FaultPipeline = app.state.fault_pipeline
+        budget: BudgetTracker = app.state.budget_tracker
         request_id = str(uuid.uuid4())
 
         upstream_url = f"{upstream_base.rstrip('/')}/{upstream_path.lstrip('/')}"
         if request.url.query:
             upstream_url = f"{upstream_url}?{request.url.query}"
 
+        async def _record(
+            *,
+            status: int,
+            upstream_ms: float | None,
+            injected_delay_ms: float,
+            faults_fired: list[str],
+        ) -> None:
+            total_ms = (time.perf_counter() - request_received_at) * 1000
+            await metrics.record(
+                RequestRecord(
+                    request_id=request_id,
+                    timestamp=now_iso(),
+                    method=request.method,
+                    route=route_label,
+                    upstream=upstream_url,
+                    status=status,
+                    total_ms=total_ms,
+                    upstream_ms=upstream_ms,
+                    injected_delay_ms=injected_delay_ms,
+                    faults_fired=faults_fired,
+                )
+            )
+
         body = await request.body()
+
+        if provider is not None and budget.is_exhausted():
+            response_body = json.dumps(budget_exceeded_body(budget.daily_cap_usd or 0.0))
+            await _record(status=402, upstream_ms=None, injected_delay_ms=0.0, faults_fired=[])
+            return Response(
+                content=response_body,
+                status_code=402,
+                headers={"x-chaosllm-request-id": request_id, "content-type": "application/json"},
+            )
+
+        # Cost tracking needs the full response body in hand (to read the
+        # provider's `usage` object), which conflicts with true streaming
+        # pass-through. Only worth paying that cost when a budget cap is
+        # actually configured; local dev (no BUDGET_DAILY_USD) keeps the
+        # unconditional streaming path below untouched. Requests that asked
+        # for a stream are never buffered either way, preserving Phase 1's
+        # SSE pass-through fidelity there; cost just isn't tracked for those
+        # (see README limitations).
+        track_cost = provider is not None and budget.daily_cap_usd is not None
+        if track_cost:
+            try:
+                request_json = json.loads(body) if body else None
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                request_json = None
+            if isinstance(request_json, dict) and request_json.get("stream") is True:
+                track_cost = False
         outcome = await pipeline.evaluate(request.url.path, body)
         body = outcome.request_body
         injected_delay_ms = outcome.pre_delay_s * 1000
@@ -98,20 +184,11 @@ def create_app(
 
         if outcome.short_circuit is not None:
             outcome.short_circuit.headers["x-chaosllm-request-id"] = request_id
-            total_ms = (time.perf_counter() - request_received_at) * 1000
-            await metrics.record(
-                RequestRecord(
-                    request_id=request_id,
-                    timestamp=now_iso(),
-                    method=request.method,
-                    route=route_label,
-                    upstream=upstream_url,
-                    status=outcome.short_circuit.status_code,
-                    total_ms=total_ms,
-                    upstream_ms=None,
-                    injected_delay_ms=injected_delay_ms,
-                    faults_fired=outcome.fired,
-                )
+            await _record(
+                status=outcome.short_circuit.status_code,
+                upstream_ms=None,
+                injected_delay_ms=injected_delay_ms,
+                faults_fired=outcome.fired,
             )
             return outcome.short_circuit
 
@@ -135,20 +212,11 @@ def create_app(
             raw_body = await upstream_response.aread()
             await upstream_response.aclose()
             transformed = outcome.response_transform.apply(raw_body)
-            total_ms = (time.perf_counter() - request_received_at) * 1000
-            await metrics.record(
-                RequestRecord(
-                    request_id=request_id,
-                    timestamp=now_iso(),
-                    method=request.method,
-                    route=route_label,
-                    upstream=upstream_url,
-                    status=upstream_response.status_code,
-                    total_ms=total_ms,
-                    upstream_ms=upstream_ms,
-                    injected_delay_ms=injected_delay_ms,
-                    faults_fired=outcome.fired,
-                )
+            await _record(
+                status=upstream_response.status_code,
+                upstream_ms=upstream_ms,
+                injected_delay_ms=injected_delay_ms,
+                faults_fired=outcome.fired,
             )
             return Response(
                 content=transformed,
@@ -157,20 +225,40 @@ def create_app(
                 media_type=upstream_response.headers.get("content-type"),
             )
 
-        total_ms = (time.perf_counter() - request_received_at) * 1000
-        await metrics.record(
-            RequestRecord(
-                request_id=request_id,
-                timestamp=now_iso(),
-                method=request.method,
-                route=route_label,
-                upstream=upstream_url,
+        if track_cost:
+            assert provider is not None  # implied by track_cost, see above
+            raw_body = await upstream_response.aread()
+            await upstream_response.aclose()
+            if 200 <= upstream_response.status_code < 300:
+                try:
+                    usage = parse_usage(provider, json.loads(raw_body))
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    usage = None
+                if usage is not None:
+                    model = ""
+                    try:
+                        model = json.loads(body).get("model", "")
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        pass
+                    await budget.add_cost(estimate_cost_usd(model, usage))
+            await _record(
                 status=upstream_response.status_code,
-                total_ms=total_ms,
                 upstream_ms=upstream_ms,
                 injected_delay_ms=injected_delay_ms,
                 faults_fired=outcome.fired,
             )
+            return Response(
+                content=raw_body,
+                status_code=upstream_response.status_code,
+                headers=response_headers,
+                media_type=upstream_response.headers.get("content-type"),
+            )
+
+        await _record(
+            status=upstream_response.status_code,
+            upstream_ms=upstream_ms,
+            injected_delay_ms=injected_delay_ms,
+            faults_fired=outcome.fired,
         )
 
         async def body_iterator() -> AsyncIterator[bytes]:
@@ -189,11 +277,11 @@ def create_app(
 
     @app.api_route("/openai/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def openai_passthrough(path: str, request: Request) -> Response:
-        return await _proxy(request, OPENAI_BASE_URL, path, "/openai")
+        return await _proxy(request, OPENAI_BASE_URL, path, "/openai", provider="openai")
 
     @app.api_route("/anthropic/{path:path}", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     async def anthropic_passthrough(path: str, request: Request) -> Response:
-        return await _proxy(request, ANTHROPIC_BASE_URL, path, "/anthropic")
+        return await _proxy(request, ANTHROPIC_BASE_URL, path, "/anthropic", provider="anthropic")
 
     @app.api_route(
         "/passthrough/{target_id}/{path:path}",

@@ -1,0 +1,48 @@
+name: Scheduled Experiment
+
+# Hourly chaos run against the hosted demo (DESIGN.md 4.7, 7.4), so the
+# public dashboard always has something live to watch. No-ops until the
+# HOSTED_PROXY_URL and HOSTED_DEMO_URL repo secrets are set, which happens
+# as part of the Railway deploy (see PLAN.md Phase 4); until then every run
+# of this workflow is a clean skip, not a failure.
+
+on:
+  schedule:
+    - cron: "0 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  scheduled-experiment:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check hosted secrets are configured
+        id: check
+        run: |
+          if [ -z "${{ secrets.HOSTED_PROXY_URL }}" ] || [ -z "${{ secrets.HOSTED_DEMO_URL }}" ]; then
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/setup-python@v5
+        if: steps.check.outputs.configured == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Install chaosllm
+        if: steps.check.outputs.configured == 'true'
+        run: pip install -e .
+
+      - name: Point spec at the hosted demo app
+        if: steps.check.outputs.configured == 'true'
+        run: |
+          sed "s#base_url: .*#base_url: ${{ secrets.HOSTED_DEMO_URL }}#" \
+            experiments/llm-latency-spike.yaml > /tmp/hosted-llm-latency-spike.yaml
+
+      - name: Run experiment against the hosted demo
+        if: steps.check.outputs.configured == 'true'
+        run: |
+          chaosllm run /tmp/hosted-llm-latency-spike.yaml \
+            --proxy-url "${{ secrets.HOSTED_PROXY_URL }}"

@@ -37,7 +37,7 @@ def test_openai_config_when_key_present(monkeypatch: pytest.MonkeyPatch) -> None
 
     assert config.provider == "openai"
     assert config.path == "/openai/v1/chat/completions"
-    assert config.model == "gpt-4o-mini"
+    assert config.model == "gpt-5.4-mini"
     assert config.request_headers() == {"authorization": "Bearer sk-test"}
 
 
@@ -79,10 +79,10 @@ def test_provider_env_var_is_case_insensitive(monkeypatch: pytest.MonkeyPatch) -
 
 def test_openai_request_body_shape() -> None:
     config = ProviderConfig(
-        provider="openai", path="/openai/v1/chat/completions", model="gpt-4o-mini", api_key="k"
+        provider="openai", path="/openai/v1/chat/completions", model="gpt-5.4-mini", api_key="k"
     )
     body = config.request_body("what is water?", "water is wet")
-    assert body["model"] == "gpt-4o-mini"
+    assert body["model"] == "gpt-5.4-mini"
     assert body["messages"][0]["role"] == "system"
     assert body["messages"][1] == {"role": "user", "content": "what is water?"}
 

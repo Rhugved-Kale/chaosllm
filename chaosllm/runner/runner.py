@@ -6,6 +6,7 @@ and persisting results (DESIGN.md 4.4).
 from __future__ import annotations
 
 import json
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -38,6 +39,11 @@ ZERO_CHAOS_FAULTS_WARNING = (
     "each fault's route glob against what the target app actually calls "
     "through the proxy). This run is not a valid chaos signal."
 )
+
+# How often the live dashboard (DESIGN.md 4.7) gets a progress tick during a
+# phase. A side-channel: a slow or unreachable proxy control API must never
+# fail or slow down the experiment itself, see _make_progress_callback.
+PROGRESS_INTERVAL_S = 2.0
 
 
 @dataclass
@@ -169,6 +175,44 @@ async def query_fault_fire_counts(
     return counts
 
 
+async def _post_event(
+    control_client: httpx.AsyncClient, run_id: str, event: dict[str, Any]
+) -> None:
+    """Best-effort: a dashboard hiccup (proxy unreachable, slow) must never
+    fail or slow down the experiment itself."""
+    try:
+        await control_client.post(f"/control/runs/{run_id}/events", json=event)
+    except httpx.HTTPError:
+        pass
+
+
+def _make_progress_callback(
+    control_client: httpx.AsyncClient, run_id: str, phase: Phase, phase_start_ts: str
+) -> Callable[[list[RequestResult]], Awaitable[None]]:
+    async def on_progress(results: list[RequestResult]) -> None:
+        latencies = sorted(r.latency_ms for r in results)
+        try:
+            fault_fire_counts = await query_fault_fire_counts(
+                control_client, since=phase_start_ts, until=now_iso()
+            )
+        except httpx.HTTPError:
+            fault_fire_counts = {}
+        await _post_event(
+            control_client,
+            run_id,
+            {
+                "type": "progress",
+                "phase": phase.value,
+                "total_count": len(results),
+                "success_count": sum(1 for r in results if r.success),
+                "latency_p95_ms": _percentile(latencies, 0.95) if latencies else None,
+                "fault_fire_counts": fault_fire_counts,
+            },
+        )
+
+    return on_progress
+
+
 def _write_events(events_path: Path, results: list[RequestResult]) -> None:
     events_path.parent.mkdir(parents=True, exist_ok=True)
     with events_path.open("w", encoding="utf-8") as f:
@@ -230,6 +274,10 @@ async def run_experiment(
                 duration_s=spec.load.warmup_s,
                 phase=Phase.WARMUP,
                 request_timeout_s=request_timeout_s,
+                on_progress=_make_progress_callback(
+                    control_client, run_id, Phase.WARMUP, warmup_start_ts
+                ),
+                progress_interval_s=PROGRESS_INTERVAL_S,
             )
             warmup_end_ts = now_iso()
             all_results += warmup_results
@@ -251,6 +299,10 @@ async def run_experiment(
                 duration_s=spec.load.duration_s,
                 phase=Phase.CHAOS,
                 request_timeout_s=request_timeout_s,
+                on_progress=_make_progress_callback(
+                    control_client, run_id, Phase.CHAOS, chaos_start_ts
+                ),
+                progress_interval_s=PROGRESS_INTERVAL_S,
             )
             chaos_end_ts = now_iso()
             all_results += chaos_results
@@ -270,6 +322,10 @@ async def run_experiment(
                 duration_s=spec.load.warmup_s,
                 phase=Phase.RECOVERY,
                 request_timeout_s=request_timeout_s,
+                on_progress=_make_progress_callback(
+                    control_client, run_id, Phase.RECOVERY, recovery_start_ts
+                ),
+                progress_interval_s=PROGRESS_INTERVAL_S,
             )
             recovery_end_ts = now_iso()
             all_results += recovery_results
@@ -311,6 +367,24 @@ async def run_experiment(
         warnings=warnings,
     )
     store.close()
+
+    async with httpx.AsyncClient(base_url=proxy_url) as control_client:
+        await _post_event(
+            control_client,
+            run_id,
+            {
+                "type": "run_complete",
+                "phase": Phase.CHAOS.value,
+                "total_count": len(chaos_results),
+                "success_count": sum(1 for r in chaos_results if r.success),
+                "fault_fire_counts": chaos_fault_fire_counts,
+                "assertions": [
+                    {"type": a.type, "passed": a.passed, "detail": a.detail}
+                    for a in assertion_results
+                ],
+                "warnings": warnings,
+            },
+        )
 
     return RunSummary(
         run_id=run_id,
