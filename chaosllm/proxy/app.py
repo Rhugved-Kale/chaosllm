@@ -203,6 +203,14 @@ def create_app(
 
         response_headers = _filtered_headers(upstream_response.headers)
         response_headers["x-chaosllm-request-id"] = request_id
+        # `.aread()` (used below whenever we need the body in hand) has httpx
+        # transparently decompress gzip/br/deflate bodies; forwarding the
+        # original content-encoding alongside that already-decoded body makes
+        # the downstream client try to decode it a second time and fail. Only
+        # the untouched streaming passthrough (aiter_raw, still-compressed
+        # bytes) further below may keep the original header.
+        decoded_response_headers = dict(response_headers)
+        decoded_response_headers.pop("content-encoding", None)
 
         if outcome.response_transform is not None:
             # truncate/malformed_json need the full body in hand, so this
@@ -221,7 +229,7 @@ def create_app(
             return Response(
                 content=transformed,
                 status_code=upstream_response.status_code,
-                headers=response_headers,
+                headers=decoded_response_headers,
                 media_type=upstream_response.headers.get("content-type"),
             )
 
@@ -250,7 +258,7 @@ def create_app(
             return Response(
                 content=raw_body,
                 status_code=upstream_response.status_code,
-                headers=response_headers,
+                headers=decoded_response_headers,
                 media_type=upstream_response.headers.get("content-type"),
             )
 
