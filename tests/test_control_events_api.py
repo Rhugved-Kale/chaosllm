@@ -64,3 +64,30 @@ async def test_sse_stream_delivers_posted_events_and_closes_on_completion(tmp_pa
 
     assert received[0]["phase"] == "warmup"
     assert received[-1]["type"] == "run_complete"
+
+
+async def test_subscribing_after_run_complete_still_delivers_it(tmp_path: Path) -> None:
+    """A dashboard opening /control/runs/{id}/events after that run already
+    finished (e.g. the tab was opened between runs) must see the completed
+    state over the wire, not an SSE connection that never sends anything."""
+    asgi_app = create_app(metrics_path=tmp_path / "metrics.jsonl")
+    transport = httpx.ASGITransport(app=asgi_app)
+
+    async with httpx.AsyncClient(transport=transport, base_url="http://proxy") as client:
+        await client.post(
+            "/control/runs/my-run-3/events",
+            json={"type": "progress", "phase": "chaos", "total_count": 1, "success_count": 1},
+        )
+        await client.post("/control/runs/my-run-3/events", json={"type": "run_complete"})
+
+        received: list[dict[str, object]] = []
+        async with client.stream("GET", "/control/runs/my-run-3/events") as resp:
+            assert resp.status_code == 200
+            async for line in resp.aiter_lines():
+                if line.startswith("data: "):
+                    received.append(json.loads(line[len("data: ") :]))
+                    if received[-1].get("type") == "run_complete":
+                        break
+
+    assert len(received) == 1
+    assert received[0]["type"] == "run_complete"
