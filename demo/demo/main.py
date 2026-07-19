@@ -17,7 +17,12 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from demo.corpus import CORPUS
-from demo.llm_client import LLMUnavailableError, naive_ask_llm, resilient_ask_llm
+from demo.llm_client import (
+    LLMUnavailableError,
+    load_provider_config,
+    naive_ask_llm,
+    resilient_ask_llm,
+)
 from demo.retrieval import build_collection, retrieve
 
 PROXY_BASE_URL = os.environ.get("PROXY_BASE_URL", "http://127.0.0.1:8000")
@@ -41,6 +46,10 @@ class AskResponse(BaseModel):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Fail fast: check the provider key before doing anything else, so a
+    # missing key is a clear startup error instead of a confusing 401 on
+    # the first /ask.
+    app.state.provider_config = load_provider_config()
     app.state.collection = build_collection(CORPUS)
     app.state.llm_client = httpx.AsyncClient(base_url=PROXY_BASE_URL)
     yield
@@ -56,12 +65,14 @@ async def ask(payload: AskRequest) -> AskResponse:
     context = "\n".join(doc["text"] for doc in docs)
     citations = [doc["id"] for doc in docs]
 
+    config = app.state.provider_config
+
     if not _resilient_mode():
-        answer = await naive_ask_llm(app.state.llm_client, payload.question, context)
+        answer = await naive_ask_llm(app.state.llm_client, config, payload.question, context)
         return AskResponse(answer=answer, citations=citations)
 
     try:
-        answer = await resilient_ask_llm(app.state.llm_client, payload.question, context)
+        answer = await resilient_ask_llm(app.state.llm_client, config, payload.question, context)
         return AskResponse(answer=answer, citations=citations)
     except LLMUnavailableError:
         extractive_answer = docs[0]["text"] if docs else ""
