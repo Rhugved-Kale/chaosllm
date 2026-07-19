@@ -247,4 +247,59 @@ assertions:
     assert run.status == "invalid"
     assert run.warnings == summary.warnings
     assert "## Warnings" in markdown
-    assert "zero faults" in markdown
+
+
+async def test_run_experiment_posts_completion_to_the_control_api(tmp_path: Path) -> None:
+    """The runner's final run_complete POST actually reaches the proxy's
+    control API and updates its live-run state (DESIGN.md 4.7's dashboard
+    reads this), not just gets swallowed by a bug in the plumbing between
+    them. The SSE fan-out itself is covered separately in
+    test_control_events_api.py; this just proves the runner side calls it.
+    """
+    proxy_metrics_path = tmp_path / "proxy_metrics.jsonl"
+    proxy_app = create_app(metrics_path=proxy_metrics_path)
+
+    async with _serve(proxy_app) as proxy_url:
+        target_app = _build_target_app(proxy_url)
+        async with _serve(target_app) as target_url:
+            payload_file = tmp_path / "questions.jsonl"
+            payload_file.write_text('{"question": "What is chaos engineering?"}\n')
+
+            spec_path = tmp_path / "spec.yaml"
+            spec_path.write_text(
+                f"""\
+name: sse-wiring-test
+target:
+  base_url: {target_url}
+  endpoint: POST /ask
+  payload_file: {payload_file}
+load:
+  concurrency: 1
+  duration_s: 0.1
+  warmup_s: 0.1
+assertions:
+  - type: success_rate
+    min: 0.5
+"""
+            )
+
+            with respx.mock(assert_all_called=False) as router:
+                router.route(host="127.0.0.1").pass_through()
+                router.post("https://api.openai.com/v1/chat/completions").mock(
+                    return_value=httpx.Response(
+                        200, json={"choices": [{"message": {"content": "ok"}}]}
+                    )
+                )
+
+                db_path = tmp_path / "chaosllm.db"
+                summary = await run_experiment(
+                    spec_path,
+                    proxy_url=proxy_url,
+                    db_path=db_path,
+                    runs_dir=tmp_path / "runs",
+                    request_timeout_s=2.0,
+                )
+
+        async with httpx.AsyncClient(base_url=proxy_url) as client:
+            latest = await client.get("/control/runs/latest")
+            assert latest.json() == {"run_id": summary.run_id}

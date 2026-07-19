@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request, Response
 from fastapi.responses import StreamingResponse
 
 from chaosllm.faults.pipeline import FaultPipeline
+from chaosllm.metrics.events import EventBus
 from chaosllm.metrics.tap import MetricsTap, RequestRecord, now_iso
 from chaosllm.proxy.budget import (
     BudgetTracker,
@@ -83,6 +84,7 @@ def create_app(
     app.state.client = client or httpx.AsyncClient()
     app.state.fault_pipeline = fault_pipeline or FaultPipeline()
     app.state.budget_tracker = budget_tracker or budget_tracker_from_env()
+    app.state.event_bus = EventBus()
     app.include_router(control_router)
 
     async def _proxy(

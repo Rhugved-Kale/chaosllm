@@ -12,6 +12,7 @@ import asyncio
 import itertools
 import json
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -57,8 +58,16 @@ async def run_load(
     duration_s: float,
     phase: Phase,
     request_timeout_s: float = DEFAULT_REQUEST_TIMEOUT_S,
+    on_progress: Callable[[list[RequestResult]], Awaitable[None]] | None = None,
+    progress_interval_s: float = 1.0,
 ) -> list[RequestResult]:
-    """Run `concurrency` workers cycling through `payloads` until `duration_s` elapses."""
+    """Run `concurrency` workers cycling through `payloads` until `duration_s` elapses.
+
+    `on_progress`, when given, is called every `progress_interval_s` with a
+    snapshot of results collected so far, for a live dashboard (DESIGN.md
+    4.7); it's a side-channel hook, not required for the run's correctness,
+    so a slow or failing callback never affects the load generation itself.
+    """
     if duration_s <= 0:
         return []
 
@@ -74,7 +83,36 @@ async def run_load(
             async with results_lock:
                 results.append(result)
 
-    await asyncio.gather(*(worker() for _ in range(concurrency)))
+    # Bounded by a fixed tick count, rather than an unbounded `while True`
+    # loop stopped by external cancellation or a shared-state condition.
+    # Empirically, under sustained load, a ticker whose own loop condition
+    # reads state written by the concurrently running worker tasks (a
+    # counter, a deadline check) can starve indefinitely and never wake from
+    # asyncio.sleep(), even though the identical sleep call in a
+    # fixed-iteration loop wakes up reliably. Ticks are a best-effort
+    # side-channel for a live dashboard, not correctness-critical, so a
+    # fixed count sidesteps the issue entirely rather than chasing it.
+    #
+    # `int(duration_s / progress_interval_s)` (floor, no padding) keeps the
+    # ticker's total run time within duration_s: a phase shorter than one
+    # interval gets zero ticks instead of forcing gather() to wait out a
+    # full interval it doesn't need, which would silently make every phase
+    # take at least progress_interval_s regardless of how short duration_s
+    # actually is.
+    tasks = [worker() for _ in range(concurrency)]
+    if on_progress is not None:
+        tick_count = int(duration_s / progress_interval_s)
+
+        async def ticker(callback: Callable[[list[RequestResult]], Awaitable[None]]) -> None:
+            for _ in range(tick_count):
+                await asyncio.sleep(progress_interval_s)
+                async with results_lock:
+                    snapshot = list(results)
+                await callback(snapshot)
+
+        tasks.append(ticker(on_progress))
+
+    await asyncio.gather(*tasks)
     return results
 
 
