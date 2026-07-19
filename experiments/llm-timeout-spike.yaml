@@ -1,6 +1,11 @@
 # Actually runnable against demo/: the demo app's retrieval is in-process
 # chromadb (no HTTP hop to fault), but its LLM call goes through the proxy's
-# /openai/* route, so that's the fault surface this spec uses.
+# /anthropic/* route (or /openai/*, depending on LLM_PROVIDER), so that's
+# the fault surface this spec uses. Targets /anthropic/* below since that's
+# what this repo's own demo deploy and .env.example default to; if you've
+# set LLM_PROVIDER=openai instead, change the route below to match, or this
+# fires zero faults and the run comes back marked invalid (same failure
+# mode vector-db-slow.yaml has against this demo, see its own header).
 #
 # hold_ms (8s) is deliberately longer than the resilient demo path's own
 # client timeout (5s, see demo/llm_client.py RESILIENT_TIMEOUT_S): the
@@ -20,7 +25,7 @@ load:
   warmup_s: 10
 faults:
   - id: timeout
-    route: /openai/*
+    route: /anthropic/*
     hold_ms: 8000
     p: 1.0
 assertions:
