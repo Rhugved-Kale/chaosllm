@@ -387,6 +387,7 @@ async def run_experiment(
                     if chaos_summary.success_count
                     else None
                 ),
+                "completed_at": now_iso(),
                 "fault_fire_counts": chaos_fault_fire_counts,
                 "assertions": [
                     {"type": a.type, "passed": a.passed, "detail": a.detail}

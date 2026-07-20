@@ -74,12 +74,71 @@ body {
   font-style: italic;
 }
 
-.panel-intro {
-  max-width: 560px;
-  margin: 0 auto 28px;
-  text-align: center;
+/* ---------- How it works ---------- */
+
+.how-it-works {
+  margin-bottom: 48px;
+}
+
+.how-steps {
+  list-style: none;
+  margin: 0 0 20px;
+  padding: 0;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 20px;
+}
+
+.how-steps li {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.how-step-num {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--accent-subtle);
+  color: var(--accent-dark);
+  font-size: 13px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.how-step-title {
+  font-size: 14px;
+  font-weight: 700;
+  margin-bottom: 4px;
+}
+
+.how-step-body {
+  font-size: 13.5px;
   color: var(--muted);
-  font-size: 15px;
+  line-height: 1.5;
+}
+
+.how-step-body code {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 0.9em;
+  color: var(--accent-dark);
+}
+
+.how-snippet {
+  background: var(--text);
+  color: #e7e9ee;
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin: 0;
+  overflow-x: auto;
+}
+
+.how-snippet code {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 13px;
   line-height: 1.6;
 }
 
@@ -139,6 +198,61 @@ body {
   font-family: ui-monospace, "SF Mono", monospace;
   font-size: 13px;
   color: var(--muted-2);
+}
+
+.trigger {
+  text-align: center;
+  margin-bottom: 28px;
+}
+
+.trigger-button {
+  font-family: var(--font-sans);
+  font-size: 15px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 999px;
+  padding: 13px 28px;
+  cursor: pointer;
+  transition:
+    background-color 0.15s ease,
+    transform 0.1s ease;
+}
+
+.trigger-button:hover:not(:disabled) {
+  background: var(--accent-dark);
+}
+
+.trigger-button:active:not(:disabled) {
+  transform: scale(0.98);
+}
+
+.trigger-button:disabled {
+  background: var(--border-strong);
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
+.trigger-note {
+  text-align: center;
+  color: var(--muted);
+  font-size: 14px;
+  margin: 0 0 28px;
+}
+
+.trigger-error {
+  color: var(--fail);
+}
+
+.run-story {
+  font-size: 16px;
+  line-height: 1.6;
+  color: var(--text);
+  background: var(--bg-subtle);
+  border-radius: 10px;
+  padding: 16px 18px;
+  margin: 0 0 32px;
 }
 
 .empty-state {
@@ -477,7 +591,8 @@ body {
   }
 
   .big-stat-row,
-  .showcase-grid {
+  .showcase-grid,
+  .how-steps {
     grid-template-columns: 1fr;
   }
 

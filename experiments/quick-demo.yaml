@@ -1,0 +1,38 @@
+# Same fault mix as llm-latency-spike.yaml (see that file's own comments for
+# why /anthropic/* and why limit: 20), compressed to fit inside the ~60s a
+# browser visitor will actually wait for after clicking "Run a live
+# experiment" on the hosted dashboard. Triggered via the proxy's own
+# POST /control/demo/trigger, not meant to be run manually, though nothing
+# stops you: `chaosllm run experiments/quick-demo.yaml` works the same as
+# any other spec.
+name: quick-demo
+description: A short version of llm-latency-spike, sized for a live "try it now" button
+target:
+  base_url: http://localhost:8100
+  endpoint: POST /ask
+  payload_file: payloads/questions.jsonl
+load:
+  concurrency: 8
+  duration_s: 40
+  warmup_s: 5
+faults:
+  - id: latency
+    route: /anthropic/*
+    delay_ms: 2000
+    jitter_ms: 500
+    p: 0.5
+  - id: rate_limit_burst
+    route: /anthropic/*
+    limit: 20
+    window_s: 10
+assertions:
+  - type: success_rate
+    min: 0.95
+  - type: latency_p95_ms
+    max: 4000
+  - type: response_contains
+    field: answer
+    forbid_empty: true
+  - type: json_field_present
+    field: citations
+    min_items: 1

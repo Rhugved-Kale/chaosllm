@@ -8,6 +8,11 @@ services:
     environment:
       BUDGET_DAILY_USD: ${BUDGET_DAILY_USD:-}
       DASHBOARD_ORIGIN: ${DASHBOARD_ORIGIN:-}
+      # Not user-configurable: demo-app is always reachable at this address
+      # within the compose network, the same way demo-app's own
+      # PROXY_BASE_URL below points back at `proxy`, not a real hostname.
+      DEMO_APP_URL: http://demo-app:8100
+      DEMO_TRIGGER_MAX_PER_HOUR: ${DEMO_TRIGGER_MAX_PER_HOUR:-4}
     volumes:
       - ./proxy.yaml:/app/proxy.yaml:ro
 

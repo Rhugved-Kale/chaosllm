@@ -1,6 +1,9 @@
 import { useEffect, useState } from "react";
 import Sparkline from "./Sparkline.jsx";
 import ComparisonShowcase from "./ComparisonShowcase.jsx";
+import HowItWorks from "./HowItWorks.jsx";
+import TriggerButton from "./TriggerButton.jsx";
+import { describeRun } from "./describeRun.js";
 
 // The one config knob this whole app has: which proxy's control API to
 // watch. Set VITE_PROXY_URL at build time (Vercel env var for the hosted
@@ -25,6 +28,7 @@ export default function App() {
   const [totalCount, setTotalCount] = useState(0);
   const [successCount, setSuccessCount] = useState(0);
   const [degradedRate, setDegradedRate] = useState(null);
+  const [completedAt, setCompletedAt] = useState(null);
   const [latencyHistory, setLatencyHistory] = useState([]);
   const [faultFireCounts, setFaultFireCounts] = useState({});
   const [assertions, setAssertions] = useState([]);
@@ -49,6 +53,7 @@ export default function App() {
           setTotalCount(0);
           setSuccessCount(0);
           setDegradedRate(null);
+          setCompletedAt(null);
           setLatencyHistory([]);
           setFaultFireCounts({});
           setAssertions([]);
@@ -94,6 +99,7 @@ export default function App() {
 
       if (data.type === "run_complete") {
         setStatus("complete");
+        setCompletedAt(data.completed_at || new Date().toISOString());
         source.close();
       }
     };
@@ -106,6 +112,11 @@ export default function App() {
   }, [runId]);
 
   const successRate = totalCount > 0 ? (successCount / totalCount) * 100 : null;
+  const isRunLive = status === "live" || status === "connecting";
+  const story =
+    status === "complete"
+      ? describeRun({ successRate, degradedRate, faultFireCounts, completedAt })
+      : null;
 
   return (
     <div className="page">
@@ -116,11 +127,7 @@ export default function App() {
         </p>
       </header>
 
-      <p className="panel-intro">
-        Below is a real test running against a small demo app, live. On a schedule, a proxy
-        sitting in front of that app&rsquo;s AI calls deliberately breaks some of them on
-        purpose &mdash; this is what happens when it does.
-      </p>
+      <HowItWorks />
 
       <section className="live-panel">
         <div className="live-panel-header">
@@ -128,15 +135,19 @@ export default function App() {
           {runId && <span className="run-id">{runId}</span>}
         </div>
 
+        <TriggerButton proxyUrl={PROXY_URL} isRunLive={isRunLive} />
+
         {!runId && (
           <p className="empty-state">
-            No experiment running yet. Kick one off with <code>chaosllm run</code> and this
-            panel comes alive.
+            No experiment has run yet. Click the button above to start one, or check back
+            &mdash; a new run also fires automatically every hour.
           </p>
         )}
 
         {runId && (
           <>
+            {story && <p className="run-story">{story}</p>}
+
             <div className="phase-row">
               <span className="phase-indicator">{phase ?? "—"}</span>
               <span className="phase-count">{totalCount.toLocaleString()} requests</span>
