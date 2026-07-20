@@ -1,10 +1,10 @@
 :root {
-  --bg: #ffffff;
-  --bg-subtle: #fafafa;
+  --bg: #fbfaf7;
+  --bg-subtle: #f5f3ee;
   --surface: #ffffff;
-  --border: #e5e7eb;
-  --border-strong: #d1d5db;
-  --text: #0f1115;
+  --border: #e7e4dc;
+  --border-strong: #d4d0c4;
+  --text: #17181c;
   --muted: #6b7280;
   --muted-2: #9ca3af;
   --accent: #4f46e5;
@@ -16,6 +16,15 @@
   --warn-subtle: #fffbeb;
   --fail: #dc2626;
   --fail-subtle: #fef2f2;
+  --font-serif: "Playfair Display", Georgia, "Times New Roman", serif;
+  --font-sans:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --shadow-sm:
+    0 1px 2px rgba(23, 24, 28, 0.03),
+    0 6px 20px rgba(23, 24, 28, 0.04);
+  --shadow-md:
+    0 2px 4px rgba(23, 24, 28, 0.04),
+    0 12px 32px rgba(23, 24, 28, 0.07);
 }
 
 * {
@@ -26,14 +35,7 @@ body {
   margin: 0;
   background: var(--bg);
   color: var(--text);
-  font-family:
-    -apple-system,
-    BlinkMacSystemFont,
-    "Segoe UI",
-    Roboto,
-    Helvetica,
-    Arial,
-    sans-serif;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
 }
 
@@ -52,27 +54,35 @@ body {
 
 .hero h1 {
   margin: 0;
-  font-size: clamp(40px, 8vw, 60px);
-  font-weight: 700;
-  letter-spacing: -0.03em;
+  font-family: var(--font-serif);
+  font-size: clamp(44px, 9vw, 68px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
   line-height: 1.05;
 }
 
 .hero .pitch {
-  margin: 14px 0 0;
+  margin: 18px 0 0;
   font-size: clamp(17px, 3vw, 20px);
   color: var(--muted);
   font-weight: 400;
+}
+
+.hero .pitch em {
+  font-family: var(--font-serif);
+  color: var(--accent-dark);
+  font-style: italic;
 }
 
 /* ---------- Live experiment panel ---------- */
 
 .live-panel {
   border: 1px solid var(--border);
-  border-radius: 16px;
+  border-radius: 20px;
   padding: 40px clamp(20px, 5vw, 48px);
   margin-bottom: 96px;
   background: var(--surface);
+  box-shadow: var(--shadow-md);
 }
 
 .live-panel-header {
@@ -92,6 +102,10 @@ body {
   color: var(--muted);
   text-transform: uppercase;
   letter-spacing: 0.06em;
+  transition:
+    color 0.2s ease,
+    border-color 0.2s ease,
+    background-color 0.2s ease;
 }
 
 .status-live {
@@ -124,6 +138,16 @@ body {
   text-align: center;
   padding: 40px 0;
   margin: 0;
+  line-height: 1.6;
+}
+
+.empty-state code {
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 14px;
+  color: var(--accent-dark);
+  background: var(--accent-subtle);
+  padding: 2px 6px;
+  border-radius: 5px;
 }
 
 .phase-row {
@@ -153,10 +177,12 @@ body {
 }
 
 .big-stat-value {
+  font-family: var(--font-serif);
   font-size: clamp(48px, 11vw, 80px);
-  font-weight: 700;
-  letter-spacing: -0.03em;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   line-height: 1;
+  font-variant-numeric: lining-nums;
 }
 
 .big-stat-value.tone-pass {
@@ -310,10 +336,16 @@ body {
 }
 
 .showcase-header h2 {
-  font-size: clamp(26px, 5vw, 34px);
-  font-weight: 700;
-  letter-spacing: -0.02em;
-  margin: 0 0 12px;
+  font-family: var(--font-serif);
+  font-size: clamp(28px, 5vw, 38px);
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  margin: 0 0 14px;
+}
+
+.showcase-header h2 em {
+  color: var(--accent-dark);
+  font-style: italic;
 }
 
 .showcase-header p {
@@ -333,9 +365,19 @@ body {
 
 .showcase-card {
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 16px;
   padding: 32px 24px;
   text-align: center;
+  background: var(--surface);
+  box-shadow: var(--shadow-sm);
+  transition:
+    transform 0.2s ease,
+    box-shadow 0.2s ease;
+}
+
+.showcase-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-md);
 }
 
 .showcase-card-label {
@@ -348,10 +390,12 @@ body {
 }
 
 .showcase-card-value {
+  font-family: var(--font-serif);
   font-size: clamp(48px, 10vw, 64px);
-  font-weight: 700;
-  letter-spacing: -0.03em;
+  font-weight: 600;
+  letter-spacing: -0.01em;
   line-height: 1;
+  font-variant-numeric: lining-nums;
 }
 
 .showcase-card.fragile .showcase-card-value {
@@ -405,10 +449,15 @@ body {
 .footer a {
   color: var(--muted);
   text-decoration: none;
+  border-bottom: 1px solid transparent;
+  transition:
+    color 0.15s ease,
+    border-color 0.15s ease;
 }
 
 .footer a:hover {
-  color: var(--text);
+  color: var(--accent-dark);
+  border-color: var(--accent-dark);
 }
 
 /* ---------- Responsive ---------- */

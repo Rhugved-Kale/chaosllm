@@ -6,7 +6,9 @@ export default function ComparisonShowcase() {
   return (
     <section className="showcase">
       <div className="showcase-header">
-        <h2>Same chaos, different outcome</h2>
+        <h2>
+          Same chaos, different <em>outcome</em>
+        </h2>
         <p>
           One experiment, run twice against the same app: once with no resilience patterns,
           once with a timeout, retries, and a fallback path.

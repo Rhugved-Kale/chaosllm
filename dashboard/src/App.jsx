@@ -111,7 +111,9 @@ export default function App() {
     <div className="page">
       <header className="hero">
         <h1>ChaosLLM</h1>
-        <p className="pitch">Chaos engineering for LLM apps</p>
+        <p className="pitch">
+          Chaos engineering for <em>LLM apps</em>
+        </p>
       </header>
 
       <section className="live-panel">
@@ -120,7 +122,12 @@ export default function App() {
           {runId && <span className="run-id">{runId}</span>}
         </div>
 
-        {!runId && <p className="empty-state">Waiting for an experiment to run…</p>}
+        {!runId && (
+          <p className="empty-state">
+            No experiment running yet. Kick one off with <code>chaosllm run</code> and this
+            panel comes alive.
+          </p>
+        )}
 
         {runId && (
           <>
