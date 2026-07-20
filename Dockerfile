@@ -7,6 +7,13 @@ COPY chaosllm ./chaosllm
 
 RUN pip install --no-cache-dir .
 
+# Not part of the Python package: bundled so the "Run a live experiment"
+# trigger endpoint (chaosllm/proxy/demo_trigger.py) can load its spec and
+# payload file straight off disk at runtime, the same way any other
+# chaosllm run invocation resolves paths relative to the cwd.
+COPY experiments ./experiments
+COPY payloads ./payloads
+
 ENV PORT=8000
 EXPOSE 8000
 

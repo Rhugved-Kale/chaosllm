@@ -31,6 +31,7 @@ from chaosllm.proxy.budget import (
 )
 from chaosllm.proxy.config import ProxyConfig
 from chaosllm.proxy.control import router as control_router
+from chaosllm.proxy.demo_trigger import DemoTrigger, demo_trigger_from_env
 
 OPENAI_BASE_URL = "https://api.openai.com"
 ANTHROPIC_BASE_URL = "https://api.anthropic.com"
@@ -64,13 +65,14 @@ def create_app(
     client: httpx.AsyncClient | None = None,
     fault_pipeline: FaultPipeline | None = None,
     budget_tracker: BudgetTracker | None = None,
+    demo_trigger: DemoTrigger | None = None,
 ) -> FastAPI:
     """Build the proxy ASGI app.
 
-    config/metrics_path/client/fault_pipeline/budget_tracker are constructor
-    parameters rather than globals or env reads so tests can build one
-    isolated app per respx mock, metrics file, fault set, and budget cap,
-    with no shared state between tests.
+    config/metrics_path/client/fault_pipeline/budget_tracker/demo_trigger
+    are constructor parameters rather than globals or env reads so tests
+    can build one isolated app per respx mock, metrics file, fault set,
+    budget cap, and trigger config, with no shared state between tests.
     """
     owns_client = client is None
 
@@ -100,6 +102,7 @@ def create_app(
     app.state.fault_pipeline = fault_pipeline or FaultPipeline()
     app.state.budget_tracker = budget_tracker or budget_tracker_from_env()
     app.state.event_bus = EventBus()
+    app.state.demo_trigger = demo_trigger if demo_trigger is not None else demo_trigger_from_env()
     app.include_router(control_router)
 
     async def _proxy(
