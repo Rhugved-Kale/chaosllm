@@ -74,6 +74,15 @@ body {
   font-style: italic;
 }
 
+.panel-intro {
+  max-width: 560px;
+  margin: 0 auto 28px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 15px;
+  line-height: 1.6;
+}
+
 /* ---------- Live experiment panel ---------- */
 
 .live-panel {

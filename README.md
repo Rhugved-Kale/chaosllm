@@ -1,6 +1,10 @@
-# chaosllm
+# ChaosLLM
 
 Chaos engineering for LLM-powered applications.
+
+**Just want to see it, not run it?** [chaosllm.vercel.app](https://chaosllm.vercel.app) is a
+live dashboard watching a real chaos experiment against a real demo app, no install required.
+It re-runs on its own every hour, so there's always something current to look at.
 
 Production LLM apps fail in ways ordinary software doesn't: provider rate limits,
 multi-second latency spikes, silently truncated or malformed output, context window

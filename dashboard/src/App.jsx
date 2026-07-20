@@ -116,6 +116,12 @@ export default function App() {
         </p>
       </header>
 
+      <p className="panel-intro">
+        Below is a real test running against a small demo app, live. On a schedule, a proxy
+        sitting in front of that app&rsquo;s AI calls deliberately breaks some of them on
+        purpose &mdash; this is what happens when it does.
+      </p>
+
       <section className="live-panel">
         <div className="live-panel-header">
           <span className={`status-pill status-${status}`}>{status}</span>
